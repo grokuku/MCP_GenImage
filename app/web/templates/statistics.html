@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - MCP GenImage{% endblock %}
+
+{% block content %}
+<style>
+    /* Shared Styles */
+    .status-success { color: #8dff8d; font-weight: bold; }
+    .status-failed { color: #ff8a8a; font-weight: bold; }
+    .thumbnail { max-width: 128px; max-height: 128px; border-radius: 4px; border: 1px solid #444; }
+
+    /* Details Box for Prompts */
+    .details-box { background-color: #2c2c2c; border: 1px solid #444; padding: 0.5em; border-radius: 4px; margin-top: 0.5em; max-height: 200px; overflow-y: auto; }
+    .details-box summary { cursor: pointer; font-weight: bold; }
+    .details-box p { margin: 0.5em 0 0 0; white-space: pre-wrap; word-wrap: break-word; }
+
+    /* Statistics Section Styles */
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 2.5rem;
+    }
+    .stat-card {
+        background-color: #2a2a2a;
+        padding: 1rem 1.5rem;
+        border-radius: 8px;
+        border: 1px solid #444;
+    }
+    .stat-card h3 {
+        margin-top: 0;
+        margin-bottom: 1rem;
+        color: #ddd;
+        border-bottom: 1px solid #444;
+        padding-bottom: 0.5rem;
+        font-size: 1.1em;
+    }
+    .stat-card .big-number {
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin: 0;
+        color: #fff;
+        text-align: center;
+    }
+    .stat-card ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+    }
+    .stat-card li {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.3rem 0;
+    }
+    .stat-card li:not(:last-child) {
+        border-bottom: 1px solid #3a3a3a;
+    }
+    .stat-card .label {
+        color: #ccc;
+        word-break: break-all;
+        padding-right: 1em;
+    }
+    .stat-card .value {
+        font-weight: bold;
+        white-space: nowrap;
+    }
+</style>
+
+<div class="container">
+    <h1>{{ title }}</h1>
+
+    <!-- Statistics Section -->
+    <h2>Statistics</h2>
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Total Successful Generations</h3>
+            <p class="big-number">{{ total_count }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>LLM Enhanced Prompts</h3>
+            <p class="big-number">{{ enhanced_count }}</p>
+        </div>
+        <div class="stat-card">
+            <h3>Usage per Render Type</h3>
+            <ul>
+                {% for r_type, count in render_type_usage %}
+                <li><span class="label">{{ r_type }}</span> <span class="value">{{ count }}</span></li>
+                {% else %}
+                <li>No data yet.</li>
+                {% endfor %}
+            </ul>
+        </div>
+        <div class="stat-card">
+            <h3>Usage per Style</h3>
+            <ul>
+                {% for style, count in style_usage %}
+                <li><span class="label">{{ style }}</span> <span class="value">{{ count }}</span></li>
+                {% else %}
+                <li>No data yet.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+
+    <!-- History Section -->
+    <h2>History</h2>
+    <p>Showing the last 100 generation logs, with the most recent first.</p>
+
+    {% if logs %}
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Status</th>
+                <th>Render Type</th>
+                <th>Styles</th>
+                <th>Ratio</th>
+                <th>Seed</th>
+                <th>Duration</th>
+                <th>Details</th>
+                <th>Output</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td>{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>
+                    <span class="{{ 'status-success' if log.status == 'SUCCESS' else 'status-failed' }}">
+                        {{ log.status }}
+                    </span>
+                </td>
+                <td>{{ log.render_type_name or 'N/A' }}</td>
+                <td>{{ log.style_names or 'N/A' }}</td>
+                <td>{{ log.aspect_ratio or 'N/A' }}</td>
+                <td>{{ log.seed or 'N/A' }}</td>
+                <td>{{ log.duration_ms }} ms</td>
+                <td>
+                    <details>
+                        <summary>Show Prompts</summary>
+                        <div class="details-box">
+                            <strong>Positive:</strong>
+                            <p>{{ log.positive_prompt }}</p>
+                            <hr style="border-color: #444; margin: 0.5em 0;">
+                            <strong>Negative:</strong>
+                            <p>{{ log.negative_prompt or 'N/A' }}</p>
+                        </div>
+                    </details>
+                </td>
+                <td>
+                    {% if log.status == 'SUCCESS' and log.image_filename %}
+                    <a href="/outputs/{{ log.image_filename }}" target="_blank">
+                        <img src="/outputs/{{ log.image_filename }}" alt="Generated Image" class="thumbnail">
+                    </a>
+                    {% elif log.error_message %}
+                    {{ log.error_message }}
+                    {% else %}
+                    N/A
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No generation logs found. Try generating an image from the "Test Generation" page.</p>
+    {% endif %}
+</div>
+{% endblock %}

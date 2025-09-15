@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- The title will be defined by the child template -->
+    <title>{% block title %}MCP GenImage{% endblock %}</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #e0e0e0;
+            background-color: #121212;
+            margin: 0;
+            padding: 0;
+        }
+
+        .main-container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2em;
+        }
+
+        nav {
+            background-color: #1e1e1e;
+            border-bottom: 2px solid #333;
+            padding: 0 2em;
+        }
+
+        nav ul {
+            list-style-type: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+        }
+
+        nav ul li a {
+            display: block;
+            color: #e0e0e0;
+            text-align: center;
+            padding: 14px 16px;
+            text-decoration: none;
+            border-bottom: 3px solid transparent;
+        }
+
+        nav ul li a:hover {
+            background-color: #2a2a2a;
+            border-bottom-color: #555;
+        }
+
+        nav ul li a.active {
+            border-bottom-color: #007bff;
+            font-weight: bold;
+        }
+
+        /* Re-usable component styles from other pages */
+        h1,
+        h2 {
+            color: #ffffff;
+            border-bottom: 2px solid #333;
+            padding-bottom: 0.5em;
+        }
+
+        .container {
+            background-color: #1e1e1e;
+            padding: 2em;
+            border-radius: 8px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 2em;
+        }
+
+        th,
+        td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+
+        th {
+            background-color: #252525;
+        }
+
+        tr:hover {
+            background-color: #2a2a2a;
+        }
+
+        form {
+            display: inline;
+        }
+
+        .form-section {
+            background-color: #252525;
+            padding: 1.5em;
+            border-radius: 8px;
+        }
+
+        .form-group {
+            margin-bottom: 1em;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5em;
+            font-weight: bold;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            background-color: #333;
+            color: #e0e0e0;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+
+        .btn {
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1em;
+            color: #ffffff;
+            margin-right: 10px;
+        }
+
+        .btn-primary {
+            background-color: #007bff;
+        }
+
+        .btn-secondary {
+            background-color: #6c757d;
+        }
+
+        .btn-danger {
+            background-color: #dc3545;
+        }
+
+        .result-box {
+            background-color: #252525;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 1em;
+            margin-top: 1.5em;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .result-box img {
+            max-width: 100%;
+            border-radius: 4px;
+            margin-top: 1em;
+        }
+    </style>
+</head>
+
+<body>
+    <nav>
+        <ul>
+            <!-- The 'active_page' variable will be passed from the route -->
+            <li><a href="/test-generation" class="{{ 'active' if active_page == 'test_generation' else '' }}">Test
+                    Generation</a></li>
+            <li><a href="/statistics" class="{{ 'active' if active_page == 'statistics' else '' }}">Statistics</a></li>
+            <li><a href="/styles" class="{{ 'active' if active_page == 'styles' else '' }}">Manage Styles</a></li>
+            <li><a href="/render-types" class="{{ 'active' if active_page == 'render_types' else '' }}">Manage Render
+                    Types</a></li>
+            <li><a href="/settings/comfyui" class="{{ 'active' if active_page == 'comfyui_settings' else '' }}">ComfyUI
+                    Settings</a></li>
+            <li><a href="/settings/ollama" class="{{ 'active' if active_page == 'ollama_settings' else '' }}">Ollama
+                    Settings</a></li>
+        </ul>
+    </nav>
+
+    <div class="main-container">
+        <!-- This is where the content of each specific page will be injected -->
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- This is where page-specific scripts will be injected -->
+    {% block scripts %}{% endblock %}
+</body>
+
+</html>

@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - MCP GenImage{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>{{ title }}</h1>
+
+    <h2>Existing Instances</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Base URL</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for instance in instances %}
+            <tr>
+                <td>{{ instance.name }}</td>
+                <td>{{ instance.base_url }}</td>
+                <td>
+                    {% if instance.is_active %}
+                    <span style="color: #8dff8d;">● Active</span>
+                    {% else %}
+                    <span style="color: #ff8a8a;">○ Inactive</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <form action="/settings/comfyui/delete/{{ instance.id }}" method="post"
+                        onsubmit="return confirm('Are you sure you want to delete this server instance?');">
+                        <button type="submit" class="btn btn-danger">Delete</button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="4" style="text-align: center;">No ComfyUI instances configured. The service will not be
+                    able to generate images.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div class="form-section">
+        <h2>Add New ComfyUI Instance</h2>
+        <form action="/settings/comfyui/add" method="post">
+            <div class="form-group">
+                <label for="name">Instance Name</label>
+                <input type="text" id="name" name="name" required placeholder="e.g., Main Server">
+            </div>
+            <div class="form-group">
+                <label for="base_url">Server Base URL</label>
+                <input type="text" id="base_url" name="base_url" required
+                    placeholder="e.g., http://192.168.1.10:9000 or http://host.docker.internal:9000">
+            </div>
+            <button type="submit" class="btn btn-primary">Add Instance</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+httpx
+websockets
+sqlalchemy
+alembic
+jinja2
+python-multipart
