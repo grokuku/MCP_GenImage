@@ -62,6 +62,7 @@ class Style(Base):
     prompt_template = Column(String, nullable=False)
     negative_prompt_template = Column(String, nullable=False, server_default='', default='')
     is_active = Column(Boolean, default=True, nullable=False)
+    is_default = Column(Boolean, default=False, nullable=False)
 
     # Foreign key for the recommended render type (one-to-many)
     recommended_render_type_id = Column(Integer, ForeignKey("render_types.id"), nullable=True)

@@ -260,6 +260,18 @@ async def handle_delete_style(
     return RedirectResponse(url="/styles", status_code=303)
 
 
+@router.post("/styles/toggle-default/{style_id}", response_class=RedirectResponse)
+async def handle_toggle_style_default(
+    style_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Handles toggling the is_default status of a style.
+    """
+    crud.toggle_style_default_status(db, style_id=style_id)
+    return RedirectResponse(url="/styles", status_code=303)
+
+
 # --- ComfyUI Settings Management ---
 @router.get("/settings/comfyui", response_class=HTMLResponse)
 async def manage_comfyui_settings(request: Request, db: Session = Depends(get_db)):

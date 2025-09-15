@@ -10,6 +10,7 @@
     <table>
         <thead>
             <tr>
+                <th>Default</th>
                 <th>Name</th>
                 <th>Category</th>
                 <th>Compatible Render Types</th>
@@ -20,6 +21,11 @@
         <tbody>
             {% for st in styles %}
             <tr>
+                <td>
+                    {% if st.is_default %}
+                    <span title="This is a default style">✅</span>
+                    {% endif %}
+                </td>
                 <td>{{ st.name }}</td>
                 <td>{{ st.category }}</td>
                 <td>
@@ -29,26 +35,27 @@
                     {{ st.recommended_render_type.name if st.recommended_render_type else 'N/A' }}
                 </td>
                 <td class="actions">
-                    <button 
-                        type="button" 
-                        class="btn btn-secondary edit-btn"
-                        data-id="{{ st.id }}"
-                        data-name="{{ st.name }}"
-                        data-category="{{ st.category }}"
+                    <button type="button" class="btn btn-secondary edit-btn" data-id="{{ st.id }}"
+                        data-name="{{ st.name }}" data-category="{{ st.category }}"
                         data-prompt-template="{{ st.prompt_template }}"
                         data-negative-prompt-template="{{ st.negative_prompt_template }}"
                         data-compatible-ids="{{ st.compatible_render_types | map(attribute='id') | list }}"
-                        data-recommended-id="{{ st.recommended_render_type.id if st.recommended_render_type else '' }}"
-                    >Edit</button>
+                        data-recommended-id="{{ st.recommended_render_type.id if st.recommended_render_type else '' }}">Edit</button>
+                    <form action="/styles/toggle-default/{{ st.id }}" method="post" style="display: inline-block;">
+                        <button type="submit" class="btn btn-secondary">
+                            {{ 'Unset Default' if st.is_default else 'Set as Default' }}
+                        </button>
+                    </form>
                     <form action="/styles/delete/{{ st.id }}" method="post"
-                        onsubmit="return confirm('Are you sure you want to delete this style?');">
+                        onsubmit="return confirm('Are you sure you want to delete this style?');"
+                        style="display: inline-block;">
                         <button type="submit" class="btn btn-danger">Delete</button>
                     </form>
                 </td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="5" style="text-align: center;">No styles found.</td>
+                <td colspan="6" style="text-align: center;">No styles found.</td>
             </tr>
             {% endfor %}
         </tbody>

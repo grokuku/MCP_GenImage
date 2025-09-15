@@ -30,19 +30,29 @@ router = APIRouter()
 async def _process_prompts(args: GenerateImageParams, db: Session) -> tuple[str, str, Optional[str]]:
     """
     Helper function to process prompts.
-    1. Checks render type compatibility with styles and updates render type if needed.
-    2. Applies styles to prompts.
-    3. Optionally enhances prompts with an LLM, using render type examples as context.
+    1. Checks for and applies default styles if none are provided.
+    2. Checks render type compatibility with styles and updates render type if needed.
+    3. Applies styles to prompts.
+    4. Optionally enhances prompts with an LLM, using render type examples as context.
     Returns a tuple of (final_prompt, final_negative_prompt, final_render_type).
     Raises OllamaError on failure.
     """
     logger.info("Starting prompt processing...")
 
-    # --- 1. Determine final render type based on style compatibility ---
+    # --- 1. Determine which styles to apply (user-provided or default) ---
+    style_names_to_apply = args.style_names
+    if not style_names_to_apply:
+        logger.info("No styles provided by user. Checking for default styles.")
+        default_styles = crud.get_default_styles(db)
+        if default_styles:
+            style_names_to_apply = [s.name for s in default_styles]
+            logger.info(f"Applying default styles: {style_names_to_apply}")
+
+    # --- 2. Determine final render type based on style compatibility ---
     final_render_type = args.render_type
-    if args.style_names:
-        logger.info(f"Analyzing styles for render type compatibility: {args.style_names}")
-        for style_name in args.style_names:
+    if style_names_to_apply:
+        logger.info(f"Analyzing styles for render type compatibility: {style_names_to_apply}")
+        for style_name in style_names_to_apply:
             style = crud.get_style_by_name(db, name=style_name)
             if not style:
                 continue
@@ -65,13 +75,13 @@ async def _process_prompts(args: GenerateImageParams, db: Session) -> tuple[str,
                     logger.info(f"No render type specified. Adopting recommended type '{new_render_type}' from style '{style_name}'.")
                     final_render_type = new_render_type
 
-    # --- 2. Apply styles ---
+    # --- 3. Apply styles ---
     positive_parts = [args.prompt]
     negative_parts = [args.negative_prompt]
 
-    if args.style_names:
-        logger.info(f"Applying styles: {args.style_names}")
-        for style_name in args.style_names:
+    if style_names_to_apply:
+        logger.info(f"Applying styles: {style_names_to_apply}")
+        for style_name in style_names_to_apply:
             style = crud.get_style_by_name(db, name=style_name)
             if style:
                 if style.prompt_template: positive_parts.append(style.prompt_template)
@@ -83,7 +93,7 @@ async def _process_prompts(args: GenerateImageParams, db: Session) -> tuple[str,
     final_negative_prompt = ", ".join(filter(None, negative_parts))
     logger.debug(f"Prompt after styles: '{final_prompt}'")
 
-    # --- 3. Enhance with LLM (if requested) ---
+    # --- 4. Enhance with LLM (if requested) ---
     if args.enhance_prompt:
         logger.info("Enhancing prompts with Ollama.")
         db_settings = crud.get_all_settings(db)
@@ -206,7 +216,7 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
     if rpc_request.method == "tools/call":
         response_to_send = None
         
-        # Variables for the generation log
+        # Variables for the generation log, initialized with defaults
         log_status = "FAILED"
         log_duration_ms = None
         log_error_message = None
@@ -214,13 +224,22 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
         comfyui_instance_id = None
         final_prompt = ""
         final_negative_prompt = ""
+        log_render_type = None
+        log_style_names = None
+        log_aspect_ratio = None
+        log_llm_enhanced = False
         start_time = None
 
         try:
             params = ToolCallParams.model_validate(rpc_request.params)
             args = params.arguments
 
-            # Store original prompts in case processing fails
+            # As soon as we have args, populate the log variables
+            log_aspect_ratio = args.aspect_ratio
+            log_llm_enhanced = args.enhance_prompt
+            log_style_names = ", ".join(args.style_names) if args.style_names else None
+
+            # Store original prompts for logging in case processing fails
             final_prompt = args.prompt
             final_negative_prompt = args.negative_prompt
 
@@ -228,6 +247,7 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
                 raise ValueError(f"Tool '{params.name}' not found.")
 
             final_prompt, final_negative_prompt, final_render_type = await _process_prompts(args, db)
+            log_render_type = final_render_type
 
             final_args = args.model_copy(update={
                 'prompt': final_prompt,
@@ -304,6 +324,11 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
             log_entry = GenerationLogCreate(
                 positive_prompt=final_prompt,
                 negative_prompt=final_negative_prompt,
+                render_type_name=log_render_type,
+                style_names=log_style_names,
+                aspect_ratio=log_aspect_ratio,
+                seed=None, # Seed is not yet retrievable from ComfyUI client
+                llm_enhanced=log_llm_enhanced,
                 status=log_status,
                 duration_ms=log_duration_ms,
                 error_message=log_error_message,

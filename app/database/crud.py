@@ -146,6 +146,27 @@ def get_style_by_id(db: Session, style_id: int):
     ).filter(models.Style.id == style_id).first()
 
 
+def get_default_styles(db: Session) -> List[models.Style]:
+    """
+    Retrieves all styles marked as default.
+    """
+    return db.query(models.Style).filter(models.Style.is_default == True).all()
+
+
+def toggle_style_default_status(db: Session, style_id: int) -> Optional[models.Style]:
+    """
+    Toggles the is_default status of a specific style.
+    """
+    db_style = get_style_by_id(db, style_id)
+    if not db_style:
+        return None
+    
+    db_style.is_default = not db_style.is_default
+    db.commit()
+    db.refresh(db_style)
+    return db_style
+
+
 def create_style(
     db: Session,
     name: str,

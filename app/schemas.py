@@ -102,6 +102,11 @@ GENERATE_IMAGE_TOOL_DEF = {
 class GenerationLogBase(BaseModel):
     positive_prompt: str
     negative_prompt: str
+    render_type_name: Optional[str] = None
+    style_names: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    seed: Optional[str] = None
+    llm_enhanced: bool = False
     status: str
     image_filename: Optional[str] = None
     duration_ms: Optional[int] = None

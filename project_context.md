@@ -146,8 +146,12 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 *   **Résumé :** Les sessions précédentes ont permis de construire un service MCP robuste, entièrement configurable via une interface web, avec une gestion avancée des styles et des workflows, une intégration de LLM, une journalisation complète et une conformité totale au standard MCP. L'architecture a été solidifiée et de nombreux bugs ont été résolus pour fiabiliser la génération d'images.
 
 ### 12. Amélioration de la Page de Statistiques et Débogage de la Migration de Base de Données (Session du 2025-09-15)
-*   **Résumé :** Cette session a débuté avec l'objectif d'améliorer la page de statistiques pour y inclure des données agrégées (nombre de générations, utilisation par style, etc.). L'implémentation de cette fonctionnalité a immédiatement révélé une erreur de conception fondamentale : les champs nécessaires pour stocker ces informations (`render_type_name`, `style_names`, `seed`, etc.) n'existaient pas dans le modèle de données `GenerationLog`. S'en est suivie une session de débogage complexe pour mettre à jour le schéma de la base de données. Plusieurs erreurs de migration successives dues aux limitations de SQLite (`OperationalError`, `CircularDependencyError`, `KeyError`) ont mis la base de données dans un état incohérent et irrécupérable via les commandes standards d'Alembic. La seule solution viable a été une réinitialisation complète de la base de données, suivie de la création d'une migration unique et propre. Le test final a révélé que si les colonnes existaient et étaient lues par la page de statistiques, la logique d'écriture dans `mcp_routes.py` n'avait jamais été mise à jour pour les sauvegarder.
-*   **État à la fin :** La base de données est propre et son schéma est maintenant correct et complet. La page de statistiques s'affiche sans erreur, mais n'affiche que des "N/A" pour les nouvelles colonnes car les données ne sont pas encore écrites. Le problème de fond est identifié et prêt à être corrigé lors de la prochaine session.
+*   **Résumé :** Cette session a débuté avec l'objectif d'améliorer la page de statistiques pour y inclure des données agrégées. L'implémentation a révélé que des champs manquaient dans le modèle `GenerationLog`. Après une réinitialisation et une migration propre de la base de données, il a été découvert que la logique d'écriture dans `mcp_routes.py` n'avait pas été mise à jour pour sauvegarder les nouvelles données.
+*   **État à la fin :** La base de données est propre, le schéma est correct. La page de statistiques est prête, mais les nouvelles données ne sont pas encore écrites.
+
+### 13. Correction de la Journalisation et Implémentation des Styles par Défaut (Session du 2025-09-15)
+*   **Résumé :** La session a commencé par la correction du bug de journalisation. Les fichiers `schemas.py` et `mcp_routes.py` ont été mis à jour pour assurer que toutes les métadonnées de génération (type de rendu, styles, etc.) sont correctement sauvegardées. Ensuite, la fonctionnalité des "styles par défaut" a été implémentée. Cela a impliqué une modification du modèle `Style` pour y ajouter un booléen `is_default`, la création et la correction d'une migration Alembic (gestion d'une `OperationalError` de SQLite), la mise à jour du CRUD, des routes web et du template HTML pour gérer ce nouvel état, et enfin l'adaptation de la logique métier dans `mcp_routes.py` pour appliquer ces styles si aucun n'est fourni par l'utilisateur.
+*   **État à la fin :** La journalisation est 100% fonctionnelle et la page de statistiques affiche des données complètes. La fonctionnalité des styles par défaut est terminée et opérationnelle.
 
 ---
 
@@ -156,10 +160,11 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 ### État Actuel (Points Forts)
 *   **Fondation Extensible :** L'architecture modulaire continue de prouver sa robustesse.
 *   **Base de Données Évolutive :** Le projet est connecté à une base de données et les migrations de schéma sont gérées proprement par Alembic.
-*   **Schéma de Données Corrigé et Robuste :** Malgré un processus de migration difficile, le schéma de la base de données est désormais complet et correct, incluant tous les champs nécessaires à la journalisation détaillée.
+*   **Schéma de Données Corrigé et Robuste :** Le schéma de la base de données est complet et correct, incluant tous les champs nécessaires à la journalisation détaillée.
 *   **Configuration Centralisée en Base de Données :** L'application est indépendante de toute configuration par fichier (`.env`) et est entièrement gérée via son interface web.
 *   **CRUD Web Fonctionnel et Amélioré :** Le service dispose d'une interface web permettant de créer, lister, supprimer et maintenant **éditer** les entités de configuration.
-*   **Interface de Statistiques Prête à Recevoir les Données :** L'historique des générations est consultable via une interface web entièrement refondue pour afficher des statistiques agrégées et des détails par génération, bien que les données ne soient pas encore enregistrées.
+*   **Journalisation et Statistiques Complètes :** L'historique des générations est consultable via une interface web et toutes les métadonnées pertinentes sont maintenant correctement enregistrées et affichées.
+*   **Styles par Défaut :** Le système peut appliquer automatiquement des styles prédéfinis aux requêtes qui n'en spécifient aucun, améliorant la qualité des générations simples.
 *   **Gestion de Workflows Dynamique :** La logique de génération peut sélectionner dynamiquement des workflows, et le workflow par défaut est configurable depuis l'interface web.
 *   **Pipeline de Traitement de Prompts Intelligent :** L'application des styles et l'amélioration optionnelle via un LLM (Ollama) sont fonctionnelles.
 *   **Logique de Compatibilité des Styles :** Le système prévient les erreurs en validant la compatibilité entre les styles et les types de rendu.
@@ -173,15 +178,15 @@ Le développement se fera en suivant les phases ci-dessous pour une progression 
 
 *   **Phase 4 : Statistiques et Maintenance**
     *   **Objectif :** Enregistrer chaque génération dans la base de données. Créer une page de statistiques. Implémenter une tâche de fond pour le nettoyage.
-    *   **Statut :** 🌗 **En cours**
+    *   **Statut :** ✅ **Terminé** (Tâche de nettoyage reportée)
         *   Créer une page de statistiques dans l'interface web : ✅ **Terminé**
-        *   🔴 **BUG À CORRIGER (Priorité 1)** : Mettre à jour la logique d'écriture des logs (`mcp_routes.py` et `schemas.py`) pour sauvegarder toutes les nouvelles informations (render type, styles, seed, etc.).
+        *   Mettre à jour la logique d'écriture des logs (`mcp_routes.py` et `schemas.py`) : ✅ **Terminé**
         *   Implémenter une tâche de fond planifiée pour supprimer les anciennes images : ⏳ **À faire (reporté)**
 
-*   **Phase 4.5 : Améliorations d'Ergonomie (Nouvelle Priorité 2)**
+*   **Phase 4.5 : Améliorations d'Ergonomie**
     *   **Objectif :** Permettre de définir un ou plusieurs styles par défaut qui seront appliqués si aucune sélection n'est faite par l'utilisateur.
-    *   **Statut :** 🕒 À faire
+    *   **Statut :** ✅ **Terminé**
 
-*   **Phase 5 : Gestion Multi-ComfyUI**
+*   **Phase 5 : Gestion Multi-ComfyUI (Priorité Actuelle)**
     *   **Objectif :** Permettre de configurer plusieurs serveurs ComfyUI dans l'interface. Implémenter une stratégie de répartition de charge (ex: round-robin) dans le `comfyui_client`.
     *   **Statut :** 🕒 À faire
