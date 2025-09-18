@@ -25,6 +25,7 @@ from ..services.comfyui_client import ComfyUIClient, ComfyUIError
 from ..services.ollama_client import OllamaClient, OllamaError
 from ..database.session import get_db
 from ..database import crud
+from ..config import settings  # Import the settings object
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -299,7 +300,8 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
 
             comfyui_client = ComfyUIClient(
                 api_url=active_instance.base_url,
-                default_workflow_path=f"/app/workflows/{default_workflow_path_from_db}" if default_workflow_path_from_db else "/app/workflows/workflow_api.json"
+                default_workflow_path=f"/app/workflows/{default_workflow_path_from_db}" if default_workflow_path_from_db else "/app/workflows/workflow_api.json",
+                generation_timeout=settings.comfyui_generation_timeout
             )
             
             logger.info("Calling ComfyUI client to generate image.")

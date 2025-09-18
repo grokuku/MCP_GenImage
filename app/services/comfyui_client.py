@@ -62,12 +62,13 @@ class WorkflowExecutionError(ComfyUIError):
 
 
 class ComfyUIClient:
-    def __init__(self, api_url: str, default_workflow_path: str):
+    def __init__(self, api_url: str, default_workflow_path: str, generation_timeout: int):
         self.server_address = api_url.replace('http://', '').replace('https://', '')
         self.base_api_url = api_url
         self.default_workflow_path = Path(default_workflow_path)
         self.workflows_dir = self.default_workflow_path.parent
-        self.timeout = httpx.Timeout(10.0, connect=5.0)
+        self.http_timeout = httpx.Timeout(10.0, connect=5.0)  # Renamed for clarity
+        self.generation_timeout = generation_timeout
 
     def _load_workflow(self, workflow_filename: str | None = None) -> dict:
         if workflow_filename:
@@ -108,7 +109,7 @@ class ComfyUIClient:
             # Sérialiser explicitement le dictionnaire en JSON avec UTF-8
             payload = json.dumps({"prompt": workflow, "client_id": client_id}).encode('utf-8')
             
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.post(
                     f"{self.base_api_url}/prompt",
                     content=payload, # Utiliser 'content' au lieu de 'json'
@@ -123,7 +124,7 @@ class ComfyUIClient:
 
     async def _get_image_data(self, filename: str, subfolder: str, image_type: str) -> bytes:
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.get(f"{self.base_api_url}/view", params={'filename': filename, 'subfolder': subfolder, 'type': image_type})
                 response.raise_for_status()
                 return response.content
@@ -135,7 +136,7 @@ class ComfyUIClient:
     async def _get_history(self, prompt_id: str) -> dict:
         for attempt in range(HISTORY_MAX_RETRIES):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                     response = await client.get(f"{self.base_api_url}/history/{prompt_id}")
                     response.raise_for_status()
 
@@ -210,7 +211,7 @@ class ComfyUIClient:
             ws_url = f"ws://{self.server_address}/ws?clientId={client_id}"
             logger.info(f"Connecting to WebSocket: {ws_url}")
             try:
-                async with asyncio.timeout(300):
+                async with asyncio.timeout(self.generation_timeout):
                     async with websockets.connect(ws_url) as websocket:
                         while True:
                             message_data = await websocket.recv()
@@ -232,6 +233,7 @@ class ComfyUIClient:
                                 logger.info(f"Execution finished for prompt_id: {prompt_id}")
                                 break
             except TimeoutError as e:
+                logger.warning(f"Image generation timed out after {self.generation_timeout}s for prompt_id: {prompt_id}")
                 raise WorkflowExecutionError(f"Image generation timed out for prompt_id: {prompt_id}") from e
             except (websockets.exceptions.WebSocketException, ConnectionRefusedError) as e:
                 raise ComfyUIConnectionError(f"Could not connect to ComfyUI WebSocket: {e}") from e
