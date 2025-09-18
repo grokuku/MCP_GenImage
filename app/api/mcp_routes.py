@@ -1,15 +1,16 @@
 ####
 # app/api/mcp_routes.py
 ####
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError, BaseModel
 from sqlalchemy.orm import Session
 import logging
 import time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import copy
 import asyncio
+import uuid
 
 from ..schemas import (
     JsonRpcRequest,
@@ -24,12 +25,58 @@ from ..schemas import (
 # Import the client classes, not global instances
 from ..services.comfyui_client import ComfyUIClient, ComfyUIError, ComfyUIConnectionError
 from ..services.ollama_client import OllamaClient, OllamaError
-from ..database.session import get_db
+from ..database.session import get_db, SessionLocal
 from ..database import crud
 from ..config import settings  # Import the settings object
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# --- WebSocket Connection Manager ---
+
+class WebSocketManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, stream_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[stream_id] = websocket
+        logger.info(f"WebSocket connected for stream_id: {stream_id}")
+
+    def disconnect(self, stream_id: str):
+        if stream_id in self.active_connections:
+            del self.active_connections[stream_id]
+            logger.info(f"WebSocket disconnected for stream_id: {stream_id}")
+
+    async def send_mcp_message(self, stream_id: str, message: dict):
+        if stream_id in self.active_connections:
+            websocket = self.active_connections[stream_id]
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.error(f"Failed to send message to stream_id {stream_id}: {e}")
+                self.disconnect(stream_id) # Clean up broken connection
+        else:
+            logger.warning(f"Could not send message: No active WebSocket for stream_id {stream_id}")
+
+
+manager = WebSocketManager()
+
+
+@router.websocket("/ws/stream/{stream_id}")
+async def websocket_endpoint(websocket: WebSocket, stream_id: str):
+    await manager.connect(stream_id, websocket)
+    try:
+        # Keep the connection alive, waiting for the server to send messages
+        # or for the client to disconnect.
+        while True:
+            # This will raise WebSocketDisconnect if the client closes the connection
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info(f"Client for stream_id {stream_id} disconnected.")
+    finally:
+        manager.disconnect(stream_id)
 
 
 async def _process_prompts(args: GenerateImageParams, db: Session) -> tuple[str, str, Optional[str]]:
@@ -220,184 +267,165 @@ def create_error_response(request_id: JsonRpcId, code: int, message: str) -> JSO
     response_model = JsonRpcResponse(error=error, id=request_id)
     return JSONResponse(status_code=200, content=response_model.model_dump(exclude_none=True))
 
-@router.post("/mcp")
-async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
+async def run_generation_task(
+    args: GenerateImageParams,
+    request_id: JsonRpcId,
+    stream_id: str
+):
+    """
+    This function runs in the background to perform the actual image generation
+    and sends the result back through the WebSocket connection.
+    """
+    db = SessionLocal()
+    start_time = time.monotonic()
+    log_data = {
+        "positive_prompt": "", "negative_prompt": "", "render_type_name": None,
+        "style_names": None, "aspect_ratio": None, "seed": None, "llm_enhanced": False,
+        "status": "FAILED", "duration_ms": None, "error_message": None,
+        "image_filename": None, "comfyui_instance_id": None
+    }
+
     try:
-        rpc_request = JsonRpcRequest.model_validate(await request.json())
-    except Exception:
-        return create_error_response(None, -32700, "Invalid JSON received.")
+        log_data.update({
+            "aspect_ratio": args.aspect_ratio,
+            "llm_enhanced": args.enhance_prompt,
+            "style_names": ", ".join(args.style_names) if args.style_names else None,
+            "positive_prompt": args.prompt,
+            "negative_prompt": args.negative_prompt
+        })
 
-    request_id = rpc_request.id
+        final_prompt, final_negative_prompt, final_render_type = await _process_prompts(args, db)
+        log_data.update({
+            "positive_prompt": final_prompt,
+            "negative_prompt": final_negative_prompt,
+            "render_type_name": final_render_type
+        })
 
-    if rpc_request.method == "tools/list":
-        # ... (contenu inchangé)
-        tool_def = copy.deepcopy(GENERATE_IMAGE_TOOL_DEF)
-        styles = crud.get_styles(db)
-        render_types = crud.get_render_types(db)
-        style_names = [s.name for s in styles]
-        render_type_names = [rt.name for rt in render_types]
-        if style_names:
-            tool_def["inputSchema"]["properties"]["style_names"]["enum"] = style_names
-        if render_type_names:
-            tool_def["inputSchema"]["properties"]["render_type"]["enum"] = render_type_names
-        return JsonRpcResponse(result={"tools": [tool_def]}, id=request_id)
+        final_args = args.model_copy(update={'prompt': final_prompt, 'negative_prompt': final_negative_prompt})
 
-    if rpc_request.method == "tools/call":
-        start_time = time.monotonic()
-        log_data = {
-            "positive_prompt": "", "negative_prompt": "", "render_type_name": None,
-            "style_names": None, "aspect_ratio": None, "seed": None, "llm_enhanced": False,
-            "status": "FAILED", "duration_ms": None, "error_message": None,
-            "image_filename": None, "comfyui_instance_id": None
-        }
+        db_settings = crud.get_all_settings(db)
+        output_url_base = db_settings.get("OUTPUT_URL_BASE")
+        if not output_url_base:
+            raise ValueError("OUTPUT_URL_BASE is not configured in settings.")
 
-        try:
-            params = ToolCallParams.model_validate(rpc_request.params)
-            args = params.arguments
+        active_instances = crud.get_all_active_comfyui_instances(db)
+        if not active_instances:
+            raise ValueError("No active ComfyUI servers are configured.")
 
-            log_data.update({
-                "aspect_ratio": args.aspect_ratio,
-                "llm_enhanced": args.enhance_prompt,
-                "style_names": ", ".join(args.style_names) if args.style_names else None,
-                "positive_prompt": args.prompt,
-                "negative_prompt": args.negative_prompt
-            })
+        target_render_type_name = final_render_type
+        if not target_render_type_name:
+            default_rt = crud.get_default_render_type(db)
+            if default_rt: target_render_type_name = default_rt.name
+        
+        compatible_instances = []
+        if target_render_type_name:
+            for inst in active_instances:
+                if any(rt.name == target_render_type_name for rt in inst.compatible_render_types):
+                    compatible_instances.append(inst)
+            logger.info(f"Found {len(compatible_instances)} active instances compatible with '{target_render_type_name}'.")
+        else:
+            compatible_instances = active_instances
+            logger.info(f"No specific render type. Considering all {len(compatible_instances)} active instances.")
 
-            if params.name != "generate_image":
-                raise ValueError(f"Tool '{params.name}' not found.")
+        if not compatible_instances:
+            raise ValueError(f"No active ComfyUI server is compatible with render type '{target_render_type_name}'.")
+        
+        async def get_instance_queue_size(instance):
+            client = ComfyUIClient(api_url=instance.base_url, default_workflow_path="dummy", generation_timeout=10)
+            try:
+                size = await client.get_queue_size()
+                return (instance, size)
+            except ComfyUIConnectionError:
+                logger.warning(f"Failed to check queue for instance '{instance.name}'. Skipping.")
+                return (instance, float('inf'))
 
-            final_prompt, final_negative_prompt, final_render_type = await _process_prompts(args, db)
-            log_data.update({
-                "positive_prompt": final_prompt,
-                "negative_prompt": final_negative_prompt,
-                "render_type_name": final_render_type
-            })
+        tasks = [get_instance_queue_size(inst) for inst in compatible_instances]
+        queue_sizes = await asyncio.gather(*tasks)
 
-            final_args = args.model_copy(update={'prompt': final_prompt, 'negative_prompt': final_negative_prompt})
+        valid_queues = [qs for qs in queue_sizes if qs[1] != float('inf')]
+        if not valid_queues:
+            raise ValueError("Could not connect to any compatible ComfyUI servers to check status.")
 
-            db_settings = crud.get_all_settings(db)
-            output_url_base = db_settings.get("OUTPUT_URL_BASE")
-            if not output_url_base:
-                raise ValueError("OUTPUT_URL_BASE is not configured in settings.")
+        selected_instance, min_queue = min(valid_queues, key=lambda item: item[1])
+        
+        logger.info(
+            f"Selected instance '{selected_instance.name}' ({selected_instance.base_url}) "
+            f"with queue size: {min_queue} for the task."
+        )
+        
+        log_data["comfyui_instance_id"] = selected_instance.id
+        
+        workflow_to_use = None
+        default_workflow_path_from_db = None
 
-            # --- Load Balancing Logic ---
-            active_instances = crud.get_all_active_comfyui_instances(db)
-            if not active_instances:
-                raise ValueError("No active ComfyUI servers are configured.")
+        if final_render_type:
+            render_type_obj = crud.get_render_type_by_name(db, name=final_render_type)
+            if not render_type_obj: raise ValueError(f"Render type '{final_render_type}' not found.")
+            workflow_to_use = render_type_obj.workflow_filename
+            logger.info(f"Using workflow: '{workflow_to_use}' for render type '{final_render_type}'")
+        else:
+            default_render_type = crud.get_default_render_type(db)
+            if not default_render_type: raise ValueError("No default workflow is configured.")
+            default_workflow_path_from_db = default_render_type.workflow_filename
+            logger.info(f"Using default workflow from database: '{default_workflow_path_from_db}'")
 
-            target_render_type_name = final_render_type
-            if not target_render_type_name:
-                default_rt = crud.get_default_render_type(db)
-                if default_rt: target_render_type_name = default_rt.name
-            
-            compatible_instances = []
-            if target_render_type_name:
-                for inst in active_instances:
-                    if any(rt.name == target_render_type_name for rt in inst.compatible_render_types):
-                        compatible_instances.append(inst)
-                logger.info(f"Found {len(compatible_instances)} active instances compatible with '{target_render_type_name}'.")
-            else:
-                compatible_instances = active_instances
-                logger.info(f"No specific render type. Considering all {len(compatible_instances)} active instances.")
+        comfyui_client = ComfyUIClient(
+            api_url=selected_instance.base_url,
+            default_workflow_path=f"/app/workflows/{default_workflow_path_from_db}" if default_workflow_path_from_db else "/app/workflows/workflow_api.json",
+            generation_timeout=settings.comfyui_generation_timeout
+        )
+        
+        logger.info(f"Calling ComfyUI client to generate image on {selected_instance.base_url}.")
+        image_url = await comfyui_client.generate_image(
+            args=final_args, output_dir_path="/app/outputs",
+            output_url_base=output_url_base, workflow_filename=workflow_to_use
+        )
+        
+        log_data.update({
+            "status": "SUCCESS",
+            "image_filename": image_url.split('/')[-1],
+            "duration_ms": int((time.monotonic() - start_time) * 1000)
+        })
+        
+        content_result = {"content": [{"type": "image", "source": image_url}]}
+        
+        # Send result back via WebSocket
+        await manager.send_mcp_message(stream_id, {
+            "jsonrpc": "2.0",
+            "method": "stream/chunk",
+            "params": {
+                "stream_id": stream_id,
+                "result": content_result
+            }
+        })
 
-            if not compatible_instances:
-                raise ValueError(f"No active ComfyUI server is compatible with render type '{target_render_type_name}'.")
-            
-            async def get_instance_queue_size(instance):
-                client = ComfyUIClient(api_url=instance.base_url, default_workflow_path="dummy", generation_timeout=10)
-                try:
-                    size = await client.get_queue_size()
-                    return (instance, size)
-                except ComfyUIConnectionError:
-                    logger.warning(f"Failed to check queue for instance '{instance.name}'. Skipping.")
-                    return (instance, float('inf'))
-
-            tasks = [get_instance_queue_size(inst) for inst in compatible_instances]
-            queue_sizes = await asyncio.gather(*tasks)
-
-            valid_queues = [qs for qs in queue_sizes if qs[1] != float('inf')]
-            if not valid_queues:
-                raise ValueError("Could not connect to any compatible ComfyUI servers to check status.")
-
-            selected_instance, min_queue = min(valid_queues, key=lambda item: item[1])
-            
-            logger.info(
-                f"Selected instance '{selected_instance.name}' ({selected_instance.base_url}) "
-                f"with queue size: {min_queue} for the task."
-            )
-            
-            log_data["comfyui_instance_id"] = selected_instance.id
-            
-            workflow_to_use = None
-            default_workflow_path_from_db = None
-
-            if final_render_type:
-                render_type_obj = crud.get_render_type_by_name(db, name=final_render_type)
-                if not render_type_obj: raise ValueError(f"Render type '{final_render_type}' not found.")
-                workflow_to_use = render_type_obj.workflow_filename
-                logger.info(f"Using workflow: '{workflow_to_use}' for render type '{final_render_type}'")
-            else:
-                default_render_type = crud.get_default_render_type(db)
-                if not default_render_type: raise ValueError("No default workflow is configured.")
-                default_workflow_path_from_db = default_render_type.workflow_filename
-                logger.info(f"Using default workflow from database: '{default_workflow_path_from_db}'")
-
-            comfyui_client = ComfyUIClient(
-                api_url=selected_instance.base_url,
-                default_workflow_path=f"/app/workflows/{default_workflow_path_from_db}" if default_workflow_path_from_db else "/app/workflows/workflow_api.json",
-                generation_timeout=settings.comfyui_generation_timeout
-            )
-            
-            logger.info(f"Calling ComfyUI client to generate image on {selected_instance.base_url}.")
-            image_url = await comfyui_client.generate_image(
-                args=final_args, output_dir_path="/app/outputs",
-                output_url_base=output_url_base, workflow_filename=workflow_to_use
-            )
-            
-            log_data.update({
-                "status": "SUCCESS",
-                "image_filename": image_url.split('/')[-1],
-                "duration_ms": int((time.monotonic() - start_time) * 1000)
-            })
-            _log_generation_result(db, log_data)
-            
-            # REVERT FIX: Return a list containing a single content object. This is the correct format.
-            content_result = {"content": [{"type": "image", "source": image_url}]}
-            return JsonRpcResponse(result=content_result, id=request_id)
-
-        except ValidationError as e:
+    except (ValidationError, ValueError, OllamaError, ComfyUIError) as e:
+        error_message = str(e)
+        if isinstance(e, ValidationError):
             error_message = f"Invalid parameters: {e}"
-            log_data.update({
-                "error_message": error_message,
-                "duration_ms": int((time.monotonic() - start_time) * 1000)
-            })
-            _log_generation_result(db, log_data)
-            return create_error_response(request_id, -32602, error_message)
-        except ValueError as e:
-            error_message = str(e)
-            log_data.update({
-                "error_message": error_message,
-                "duration_ms": int((time.monotonic() - start_time) * 1000)
-            })
-            _log_generation_result(db, log_data)
-            return create_error_response(request_id, -32000, error_message)
-        except (OllamaError, ComfyUIError) as e:
-            logger.error(f"Service error during 'tools/call': {e}", exc_info=True)
-            error_message = f"Service error: {e}"
-            log_data.update({
-                "error_message": error_message,
-                "duration_ms": int((time.monotonic() - start_time) * 1000)
-            })
-            _log_generation_result(db, log_data)
-            return create_error_response(request_id, -32000, error_message)
-        except Exception as e:
-            logger.exception("Unexpected internal server error during 'tools/call'.")
-            error_message = f"Internal server error: {str(e)}"
-            log_data.update({
-                "error_message": error_message,
-                "duration_ms": int((time.monotonic() - start_time) * 1000)
-            })
-            _log_generation_result(db, log_data)
-            return create_error_response(request_id, -32603, "Internal server error.")
-    
-    return create_error_response(request_id, -32601, f"Method '{rpc_request.method}' not found.")
+        elif isinstance(e, (OllamaError, ComfyUIError)):
+                error_message = f"Service error: {e}"
+
+        logger.error(f"Error during background generation for stream {stream_id}: {error_message}", exc_info=True)
+        log_data.update({
+            "error_message": error_message,
+            "duration_ms": int((time.monotonic() - start_time) * 1000)
+        })
+        
+        error_payload = {"code": -32000, "message": error_message}
+        await manager.send_mcp_message(stream_id, {
+            "jsonrpc": "2.0",
+            "method": "stream/chunk",
+            "params": {"stream_id": stream_id, "error": error_payload}
+        })
+
+    except Exception as e:
+        logger.exception(f"Unexpected internal server error during background generation for stream {stream_id}.")
+        error_message = f"Internal server error: {str(e)}"
+        log_data.update({
+            "error_message": error_message,
+            "duration_ms": int((time.monotonic() - start_time) * 1000)
+        })
+        
+        error_payload = {"code": -32603, "message": "Internal server error."}
+        await manager.send_mcp_mes
