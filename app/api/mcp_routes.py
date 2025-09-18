@@ -9,6 +9,7 @@ import logging
 import time
 from typing import Optional, Dict, Any
 import copy
+import asyncio
 
 from ..schemas import (
     JsonRpcRequest,
@@ -21,7 +22,7 @@ from ..schemas import (
     GenerationLogCreate
 )
 # Import the client classes, not global instances
-from ..services.comfyui_client import ComfyUIClient, ComfyUIError
+from ..services.comfyui_client import ComfyUIClient, ComfyUIError, ComfyUIConnectionError
 from ..services.ollama_client import OllamaClient, OllamaError
 from ..database.session import get_db
 from ..database import crud
@@ -279,10 +280,53 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
             if not output_url_base:
                 raise ValueError("OUTPUT_URL_BASE is not configured in settings.")
 
-            active_instance = crud.get_active_comfyui_instance(db)
-            if not active_instance:
-                raise ValueError("No active ComfyUI server is configured.")
-            log_data["comfyui_instance_id"] = active_instance.id
+            # --- Load Balancing Logic ---
+            active_instances = crud.get_all_active_comfyui_instances(db)
+            if not active_instances:
+                raise ValueError("No active ComfyUI servers are configured.")
+
+            target_render_type_name = final_render_type
+            if not target_render_type_name:
+                default_rt = crud.get_default_render_type(db)
+                if default_rt: target_render_type_name = default_rt.name
+            
+            compatible_instances = []
+            if target_render_type_name:
+                for inst in active_instances:
+                    if any(rt.name == target_render_type_name for rt in inst.compatible_render_types):
+                        compatible_instances.append(inst)
+                logger.info(f"Found {len(compatible_instances)} active instances compatible with '{target_render_type_name}'.")
+            else:
+                compatible_instances = active_instances
+                logger.info(f"No specific render type. Considering all {len(compatible_instances)} active instances.")
+
+            if not compatible_instances:
+                raise ValueError(f"No active ComfyUI server is compatible with render type '{target_render_type_name}'.")
+            
+            async def get_instance_queue_size(instance):
+                client = ComfyUIClient(api_url=instance.base_url, default_workflow_path="dummy", generation_timeout=10)
+                try:
+                    size = await client.get_queue_size()
+                    return (instance, size)
+                except ComfyUIConnectionError:
+                    logger.warning(f"Failed to check queue for instance '{instance.name}'. Skipping.")
+                    return (instance, float('inf'))
+
+            tasks = [get_instance_queue_size(inst) for inst in compatible_instances]
+            queue_sizes = await asyncio.gather(*tasks)
+
+            valid_queues = [qs for qs in queue_sizes if qs[1] != float('inf')]
+            if not valid_queues:
+                raise ValueError("Could not connect to any compatible ComfyUI servers to check status.")
+
+            selected_instance, min_queue = min(valid_queues, key=lambda item: item[1])
+            
+            logger.info(
+                f"Selected instance '{selected_instance.name}' ({selected_instance.base_url}) "
+                f"with queue size: {min_queue} for the task."
+            )
+            
+            log_data["comfyui_instance_id"] = selected_instance.id
             
             workflow_to_use = None
             default_workflow_path_from_db = None
@@ -299,12 +343,12 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
                 logger.info(f"Using default workflow from database: '{default_workflow_path_from_db}'")
 
             comfyui_client = ComfyUIClient(
-                api_url=active_instance.base_url,
+                api_url=selected_instance.base_url,
                 default_workflow_path=f"/app/workflows/{default_workflow_path_from_db}" if default_workflow_path_from_db else "/app/workflows/workflow_api.json",
                 generation_timeout=settings.comfyui_generation_timeout
             )
             
-            logger.info("Calling ComfyUI client to generate image.")
+            logger.info(f"Calling ComfyUI client to generate image on {selected_instance.base_url}.")
             image_url = await comfyui_client.generate_image(
                 args=final_args, output_dir_path="/app/outputs",
                 output_url_base=output_url_base, workflow_filename=workflow_to_use
@@ -317,6 +361,7 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
             })
             _log_generation_result(db, log_data)
             
+            # REVERT FIX: Return a list containing a single content object. This is the correct format.
             content_result = {"content": [{"type": "image", "source": image_url}]}
             return JsonRpcResponse(result=content_result, id=request_id)
 

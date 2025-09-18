@@ -123,6 +123,7 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(f"ComfyUI returned an error when queueing prompt: {e.response.status_code} - {e.response.text}") from e
 
     async def _get_image_data(self, filename: str, subfolder: str, image_type: str) -> bytes:
+        logger.debug(f"Attempting to get image data from {self.base_api_url}")
         try:
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.get(f"{self.base_api_url}/view", params={'filename': filename, 'subfolder': subfolder, 'type': image_type})
@@ -134,6 +135,7 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(f"ComfyUI returned an error when downloading image: {e.response.status_code} - {e.response.text}") from e
 
     async def _get_history(self, prompt_id: str) -> dict:
+        logger.debug(f"Attempting to get history for prompt {prompt_id} from {self.base_api_url}")
         for attempt in range(HISTORY_MAX_RETRIES):
             try:
                 async with httpx.AsyncClient(timeout=self.http_timeout) as client:
@@ -169,6 +171,24 @@ class ComfyUIClient:
         
         raise WorkflowExecutionError(f"Failed to retrieve history for prompt_id {prompt_id} after {HISTORY_MAX_RETRIES} attempts.")
 
+    async def get_queue_size(self) -> int:
+        """
+        Fetches the current queue size from the ComfyUI server.
+        The queue size is the sum of running and pending tasks.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=self.http_timeout) as client:
+                response = await client.get(f"{self.base_api_url}/queue")
+                response.raise_for_status()
+                data = response.json()
+                # The queue size is the sum of items currently running and items pending.
+                size = len(data.get('queue_running', [])) + len(data.get('queue_pending', []))
+                logger.debug(f"Queue size for {self.base_api_url} is {size}")
+                return size
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            logger.warning(f"Could not get queue size for {self.base_api_url}: {e}")
+            raise ComfyUIConnectionError(f"Could not get queue size from {self.base_api_url}") from e
+
     async def generate_image(
         self,
         args: GenerateImageParams,
@@ -176,6 +196,7 @@ class ComfyUIClient:
         output_url_base: str,
         workflow_filename: str | None = None
     ) -> str:
+        prompt_id = None # Initialize prompt_id to None
         try:
             logger.info(f"Generation request received. Prompt starts with: '{args.prompt[:80]}...'")
             client_id = str(uuid.uuid4())
@@ -201,12 +222,12 @@ class ComfyUIClient:
                 else:
                     logger.warning(f"Aspect ratio '{args.aspect_ratio}' provided, but node '{LATENT_IMAGE_TITLE}' not found.")
 
-            logger.info("Queueing prompt on ComfyUI server...")
+            logger.info(f"Queueing prompt on ComfyUI server at {self.base_api_url}...")
             queue_response = await self._queue_prompt(workflow, client_id)
             prompt_id = queue_response.get('prompt_id')
             if not prompt_id:
                 raise WorkflowExecutionError(f"ComfyUI API did not return a prompt_id. Response: {queue_response}")
-            logger.info(f"Prompt queued with ID: {prompt_id}")
+            logger.info(f"Prompt queued with ID: {prompt_id} on server {self.base_api_url}")
 
             ws_url = f"ws://{self.server_address}/ws?clientId={client_id}"
             logger.info(f"Connecting to WebSocket: {ws_url}")
@@ -261,8 +282,10 @@ class ComfyUIClient:
             image_data = await self._get_image_data(filename, subfolder, image_type)
 
             try:
-                safe_filename = Path(filename).name
-                output_path = Path(output_dir_path) / safe_filename
+                # FIX: Generate a unique filename to prevent overwrites in multi-server setup
+                original_path = Path(filename)
+                unique_filename = f"{uuid.uuid4()}{original_path.suffix}"
+                output_path = Path(output_dir_path) / unique_filename
                 output_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(output_path, 'wb') as f:
                     f.write(image_data)
@@ -270,12 +293,12 @@ class ComfyUIClient:
             except OSError as e:
                 raise ComfyUIError(f"Failed to save image to disk: {e}") from e
 
-            final_url = f"{output_url_base.rstrip('/')}/{safe_filename}"
+            final_url = f"{output_url_base.rstrip('/')}/{unique_filename}"
             logger.info(f"Returning public URL: {final_url}")
             return final_url
         
         except Exception as e:
-            logger.error(f"An unhandled exception occurred in generate_image", exc_info=True)
+            logger.error(f"An unhandled exception occurred in generate_image for prompt_id {prompt_id} on server {self.base_api_url}", exc_info=True)
             raise e
         finally:
-            logger.info("generate_image function finished execution (either success or failure).")
+            logger.info(f"generate_image function finished execution for prompt_id {prompt_id} (either success or failure).")

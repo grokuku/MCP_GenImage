@@ -16,6 +16,14 @@ style_render_type_association = Table(
     Column("render_type_id", Integer, ForeignKey("render_types.id"), primary_key=True),
 )
 
+# Association table for the many-to-many relationship between ComfyUIInstance and RenderType
+comfyui_render_type_association = Table(
+    "comfyui_render_type_association",
+    Base.metadata,
+    Column("comfyui_instance_id", Integer, ForeignKey("comfyui_instances.id"), primary_key=True),
+    Column("render_type_id", Integer, ForeignKey("render_types.id"), primary_key=True),
+)
+
 
 class RenderType(Base):
     """
@@ -41,6 +49,13 @@ class RenderType(Base):
     styles_recommending_this = relationship(
         "Style",
         back_populates="recommended_render_type"
+    )
+
+    # Back-populates the many-to-many relationship from ComfyUIInstance
+    compatible_comfyui_instances = relationship(
+        "ComfyUIInstance",
+        secondary=comfyui_render_type_association,
+        back_populates="compatible_render_types"
     )
 
     def __repr__(self):
@@ -110,6 +125,13 @@ class ComfyUIInstance(Base):
     is_active = Column(Boolean, default=True, nullable=False)
 
     generation_logs = relationship("GenerationLog", back_populates="comfyui_instance")
+
+    # Relationship for compatible render types (many-to-many)
+    compatible_render_types = relationship(
+        "RenderType",
+        secondary=comfyui_render_type_association,
+        back_populates="compatible_comfyui_instances"
+    )
 
     def __repr__(self):
         return f"<ComfyUIInstance(id={self.id}, name='{self.name}', url='{self.base_url}', active={self.is_active})>"

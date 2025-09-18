@@ -279,11 +279,13 @@ async def manage_comfyui_settings(request: Request, db: Session = Depends(get_db
     Displays the page for managing ComfyUI server instances.
     """
     instances = crud.get_comfyui_instances(db)
+    all_render_types = crud.get_render_types(db)
     context = {
         "request": request,
         "title": "Manage ComfyUI Instances",
         "active_page": "comfyui_settings",
-        "instances": instances
+        "instances": instances,
+        "all_render_types": all_render_types
     }
     return templates.TemplateResponse("manage_comfyui.html", context)
 
@@ -291,16 +293,55 @@ async def manage_comfyui_settings(request: Request, db: Session = Depends(get_db
 async def handle_add_comfyui_instance(
     name: str = Form(...),
     base_url: str = Form(...),
+    compatible_render_types: List[int] = Form([]),
     db: Session = Depends(get_db)
 ):
     """
     Handles adding a new ComfyUI instance.
     """
-    instance = crud.create_comfyui_instance(db, name=name, base_url=base_url.strip())
+    instance = crud.create_comfyui_instance(
+        db,
+        name=name,
+        base_url=base_url.strip(),
+        compatible_render_type_ids=compatible_render_types
+    )
     if not instance:
         logger.warning(f"Attempted to create a ComfyUI instance with a duplicate name or URL: {name} / {base_url}")
-        # In a real app, we might want to return a message to the user here.
     return RedirectResponse(url="/settings/comfyui", status_code=303)
+
+
+@router.post("/settings/comfyui/update/{instance_id}", response_class=RedirectResponse)
+async def handle_update_comfyui_instance(
+    instance_id: int,
+    name: str = Form(...),
+    base_url: str = Form(...),
+    compatible_render_types: List[int] = Form([]),
+    db: Session = Depends(get_db)
+):
+    """
+    Handles updating an existing ComfyUI instance.
+    """
+    crud.update_comfyui_instance(
+        db,
+        instance_id=instance_id,
+        name=name,
+        base_url=base_url.strip(),
+        compatible_render_type_ids=compatible_render_types
+    )
+    return RedirectResponse(url="/settings/comfyui", status_code=303)
+
+
+@router.post("/settings/comfyui/toggle-active/{instance_id}", response_class=RedirectResponse)
+async def handle_toggle_comfyui_active(
+    instance_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Handles toggling the is_active status of a ComfyUI instance.
+    """
+    crud.toggle_comfyui_instance_active_status(db, instance_id=instance_id)
+    return RedirectResponse(url="/settings/comfyui", status_code=303)
+
 
 @router.post("/settings/comfyui/delete/{instance_id}", response_class=RedirectResponse)
 async def handle_delete_comfyui_instance(

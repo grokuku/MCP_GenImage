@@ -278,33 +278,112 @@ def update_settings(db: Session, settings_data: dict[str, str]):
 
 def get_comfyui_instances(db: Session):
     """
-    Retrieves all ComfyUI instances from the database.
+    Retrieves all ComfyUI instances from the database, eager loading
+    their compatible render types.
     """
-    return db.query(models.ComfyUIInstance).order_by(models.ComfyUIInstance.name).all()
+    return db.query(models.ComfyUIInstance).options(
+        joinedload(models.ComfyUIInstance.compatible_render_types)
+    ).order_by(models.ComfyUIInstance.name).all()
 
 
-def get_active_comfyui_instance(db: Session) -> Optional[models.ComfyUIInstance]:
+def get_comfyui_instance_by_id(db: Session, instance_id: int):
+    """
+    Retrieves a single ComfyUI instance by its ID, eager loading
+    its compatible render types.
+    """
+    return db.query(models.ComfyUIInstance).options(
+        joinedload(models.ComfyUIInstance.compatible_render_types)
+    ).filter(models.ComfyUIInstance.id == instance_id).first()
+
+
+def get_one_active_comfyui_instance(db: Session) -> Optional[models.ComfyUIInstance]:
     """
     Retrieves the first active ComfyUI instance found.
-    In the future, this could be extended for load balancing.
+    Maintained for compatibility, but get_all_active_comfyui_instances is preferred.
     """
     return db.query(models.ComfyUIInstance).filter(models.ComfyUIInstance.is_active == True).first()
 
 
-def create_comfyui_instance(db: Session, name: str, base_url: str):
+def get_all_active_comfyui_instances(db: Session) -> List[models.ComfyUIInstance]:
     """
-    Creates a new ComfyUI instance in the database.
-    Returns the created instance or None if it fails.
+    Retrieves all active ComfyUI instances for load balancing.
+    Eager loads compatible render types.
     """
-    # Basic check to prevent duplicates
+    return db.query(models.ComfyUIInstance).options(
+        joinedload(models.ComfyUIInstance.compatible_render_types)
+    ).filter(models.ComfyUIInstance.is_active == True).all()
+
+
+def create_comfyui_instance(
+    db: Session,
+    name: str,
+    base_url: str,
+    compatible_render_type_ids: List[int]
+):
+    """
+    Creates a new ComfyUI instance and links it to compatible render types.
+    """
     exists = db.query(models.ComfyUIInstance).filter(
         (models.ComfyUIInstance.name == name) | (models.ComfyUIInstance.base_url == base_url)
     ).first()
     if exists:
         return None
 
-    db_instance = models.ComfyUIInstance(name=name, base_url=base_url)
+    compatible_types = []
+    if compatible_render_type_ids:
+        compatible_types = db.query(models.RenderType).filter(
+            models.RenderType.id.in_(compatible_render_type_ids)
+        ).all()
+
+    db_instance = models.ComfyUIInstance(
+        name=name,
+        base_url=base_url,
+        compatible_render_types=compatible_types
+    )
     db.add(db_instance)
+    db.commit()
+    db.refresh(db_instance)
+    return db_instance
+
+
+def update_comfyui_instance(
+    db: Session,
+    instance_id: int,
+    name: str,
+    base_url: str,
+    compatible_render_type_ids: List[int]
+):
+    """
+    Updates an existing ComfyUI instance, including its compatible render types.
+    """
+    db_instance = get_comfyui_instance_by_id(db, instance_id)
+    if not db_instance:
+        return None
+
+    db_instance.name = name
+    db_instance.base_url = base_url
+
+    compatible_types = []
+    if compatible_render_type_ids:
+        compatible_types = db.query(models.RenderType).filter(
+            models.RenderType.id.in_(compatible_render_type_ids)
+        ).all()
+    db_instance.compatible_render_types = compatible_types
+
+    db.commit()
+    db.refresh(db_instance)
+    return db_instance
+
+
+def toggle_comfyui_instance_active_status(db: Session, instance_id: int) -> Optional[models.ComfyUIInstance]:
+    """
+    Toggles the is_active status of a specific ComfyUI instance.
+    """
+    db_instance = get_comfyui_instance_by_id(db, instance_id)
+    if not db_instance:
+        return None
+    
+    db_instance.is_active = not db_instance.is_active
     db.commit()
     db.refresh(db_instance)
     return db_instance
