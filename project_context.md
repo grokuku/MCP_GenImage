@@ -1,5 +1,5 @@
 #### Fichier : project_context.md
-#### Date de dernière mise à jour : 2025-09-15
+#### Date de dernière mise à jour : 2025-09-18
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
 
 ---
@@ -142,16 +142,20 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 
 ## 9. SESSIONS DE DÉVELOPPEMENT (Historique)
 
-### 1-11. (Sessions Précédentes)
-*   **Résumé :** Les sessions précédentes ont permis de construire un service MCP robuste, entièrement configurable via une interface web, avec une gestion avancée des styles et des workflows, une intégration de LLM, une journalisation complète et une conformité totale au standard MCP. L'architecture a été solidifiée et de nombreux bugs ont été résolus pour fiabiliser la génération d'images.
+### 1-13. (Sessions Précédentes)
+*   **Résumé :** Les sessions jusqu'à la 13 ont permis de construire les fondations robustes de l'application, incluant la gestion des styles, des workflows, l'intégration d'Ollama et une journalisation complète.
 
-### 12. Amélioration de la Page de Statistiques et Débogage de la Migration de Base de Données (Session du 2025-09-15)
-*   **Résumé :** Cette session a débuté avec l'objectif d'améliorer la page de statistiques pour y inclure des données agrégées. L'implémentation a révélé que des champs manquaient dans le modèle `GenerationLog`. Après une réinitialisation et une migration propre de la base de données, il a été découvert que la logique d'écriture dans `mcp_routes.py` n'avait pas été mise à jour pour sauvegarder les nouvelles données.
-*   **État à la fin :** La base de données est propre, le schéma est correct. La page de statistiques est prête, mais les nouvelles données ne sont pas encore écrites.
+### 14. Débogage du Workflow et Planification de la Phase 6 (Session du 2025-09-17)
+*   **Résumé :** Correction d'un bug de décodage `utf-32-be` se produisant avec un workflow spécifique (`rayflux`). Le problème ne venait pas de l'envoi de la requête mais de la réception de la réponse de l'API `/history` de ComfyUI. Il a été résolu en forçant le décodage en `UTF-8` de la réponse brute. Une discussion a ensuite eu lieu sur l'architecture des futurs outils d'upscale et d'édition. Il a été décidé de les intégrer au projet actuel. Les priorités de développement ont été redéfinies en conséquence.
+*   **État à la fin :** Le bug est résolu. Le plan d'action pour la Phase 6 est validé. Le projet est prêt pour le développement des nouvelles fonctionnalités.
 
-### 13. Correction de la Journalisation et Implémentation des Styles par Défaut (Session du 2025-09-15)
-*   **Résumé :** La session a commencé par la correction du bug de journalisation. Les fichiers `schemas.py` et `mcp_routes.py` ont été mis à jour pour assurer que toutes les métadonnées de génération (type de rendu, styles, etc.) sont correctement sauvegardées. Ensuite, la fonctionnalité des "styles par défaut" a été implémentée. Cela a impliqué une modification du modèle `Style` pour y ajouter un booléen `is_default`, la création et la correction d'une migration Alembic (gestion d'une `OperationalError` de SQLite), la mise à jour du CRUD, des routes web et du template HTML pour gérer ce nouvel état, et enfin l'adaptation de la logique métier dans `mcp_routes.py` pour appliquer ces styles si aucun n'est fourni par l'utilisateur.
-*   **État à la fin :** La journalisation est 100% fonctionnelle et la page de statistiques affiche des données complètes. La fonctionnalité des styles par défaut est terminée et opérationnelle.
+### 15. Débogage en Profondeur des Erreurs de Génération (Session du 2025-09-18)
+*   **Résumé :** Une session de débogage intense pour résoudre plusieurs erreurs complexes.
+    1.  Un bug `No images found` a été tracé jusqu'à un custom node ComfyUI (`UltralyticsDetectorProvider`) incompatible avec une version récente de PyTorch. **Résolu par la mise à jour du custom node.**
+    2.  Un bug `Could not connect to Ollama` a été identifié comme un timeout applicatif, causé par un modèle LLM qui partait en boucle. **Résolu en changeant de modèle LLM et en augmentant le timeout dans le client.**
+    3.  Le bug d'encodage `utf-32-be` est réapparu. Grâce à l'implémentation d'un logging robuste (`main.py`) et d'une gestion d'erreur améliorée (`comfyui_client.py`), la cause a été identifiée : l'erreur se produisait lors de la lecture d'un message WebSocket corrompu, et non lors de l'appel à `/history`. **Corrigé en forçant le décodage UTF-8 des messages WebSocket.**
+    4.  Cette correction a révélé un dernier bug : l'image est générée et envoyée, mais un message d'erreur est quand même envoyé et le log est marqué comme `FAILED`. Le diagnostic pointe vers la logique de gestion d'erreurs et de journalisation dans `mcp_routes.py`. Une refactorisation a été tentée, mais n'a pas résolu le problème.
+*   **État à la fin :** Les bugs critiques de crash sont résolus. L'application est plus stable, mais un bug de logique persiste, indiquant un succès comme un échec. Le débogage est en pause, en attente de la prochaine session.
 
 ---
 
@@ -173,20 +177,17 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 ### Plan d'Action Détaillé
 Le développement se fera en suivant les phases ci-dessous pour une progression logique et maîtrisée.
 
-*   **Phase 1 à 3.5 : Fondations, Workflows, Styles, Configuration Dynamique**
+*   **Phase 1 à 4.5 : Fondations, Workflows, Styles, Configuration, Statistiques**
     *   **Statut :** ✅ **Terminé**
 
-*   **Phase 4 : Statistiques et Maintenance**
-    *   **Objectif :** Enregistrer chaque génération dans la base de données. Créer une page de statistiques. Implémenter une tâche de fond pour le nettoyage.
-    *   **Statut :** ✅ **Terminé** (Tâche de nettoyage reportée)
-        *   Créer une page de statistiques dans l'interface web : ✅ **Terminé**
-        *   Mettre à jour la logique d'écriture des logs (`mcp_routes.py` et `schemas.py`) : ✅ **Terminé**
-        *   Implémenter une tâche de fond planifiée pour supprimer les anciennes images : ⏳ **À faire (reporté)**
+*   **Phase 5.5 : Résolution du Bug de Journalisation (Priorité Actuelle)**
+    *   **Objectif :** Corriger le bug où une génération réussie est signalée comme une erreur et enregistrée comme `FAILED` dans la base de données.
+    *   **Statut :** 🕒 **En cours**
 
-*   **Phase 4.5 : Améliorations d'Ergonomie**
-    *   **Objectif :** Permettre de définir un ou plusieurs styles par défaut qui seront appliqués si aucune sélection n'est faite par l'utilisateur.
-    *   **Statut :** ✅ **Terminé**
+*   **Phase 6 : Extension en Hub d'Outils d'Imagerie**
+    *   **Objectif :** Étendre les capacités du service en ajoutant les outils MCP `edit_image` et `upscale_image`.
+    *   **Statut :** ⏳ **Bloqué** par la Phase 5.5.
 
-*   **Phase 5 : Gestion Multi-ComfyUI (Priorité Actuelle)**
-    *   **Objectif :** Permettre de configurer plusieurs serveurs ComfyUI dans l'interface. Implémenter une stratégie de répartition de charge (ex: round-robin) dans le `comfyui_client`.
-    *   **Statut :** 🕒 À faire
+*   **Phase 5 : Gestion Multi-ComfyUI**
+    *   **Objectif :** Permettre de configurer plusieurs serveurs ComfyUI et implémenter une répartition de charge.
+    *   **Statut :** ⏳ **Reporté** (En attente de la configuration de l'infrastructure serveur.)

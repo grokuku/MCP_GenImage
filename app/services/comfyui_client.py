@@ -101,10 +101,14 @@ class ComfyUIClient:
 
     async def _queue_prompt(self, workflow: dict, client_id: str) -> dict:
         try:
+            # Sérialiser explicitement le dictionnaire en JSON avec UTF-8
+            payload = json.dumps({"prompt": workflow, "client_id": client_id}).encode('utf-8')
+            
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     f"{self.base_api_url}/prompt",
-                    json={"prompt": workflow, "client_id": client_id}
+                    content=payload, # Utiliser 'content' au lieu de 'json'
+                    headers={'Content-Type': 'application/json'} # Spécifier l'en-tête
                 )
                 response.raise_for_status()
                 return response.json()
@@ -129,8 +133,25 @@ class ComfyUIClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(f"{self.base_api_url}/history/{prompt_id}")
                 response.raise_for_status()
-                history = response.json()
-                return history.get(prompt_id, {})
+
+                raw_bytes = response.content
+                try:
+                    decoded_text = raw_bytes.decode('utf-8')
+                    history = json.loads(decoded_text)
+                    return history.get(prompt_id, {})
+                except UnicodeDecodeError as e:
+                    try:
+                        debug_dir = Path("data/debug")
+                        debug_dir.mkdir(exist_ok=True)
+                        debug_filepath = debug_dir / f"history_error_{prompt_id}.bin"
+                        with open(debug_filepath, "wb") as f:
+                            f.write(raw_bytes)
+                        logger.error(f"UNICODE DECODE ERROR during get_history. The corrupted response has been saved to: {debug_filepath}")
+                    except Exception as file_error:
+                        logger.critical(f"CRITICAL: FAILED TO SAVE DEBUG FILE for get_history. Error: {file_error}")
+                    
+                    raise ComfyUIError(f"UnicodeDecodeError in get_history: {e}") from e
+
         except httpx.RequestError as e:
             raise ComfyUIConnectionError(f"Could not connect to ComfyUI to get history: {e}") from e
         except httpx.HTTPStatusError as e:
@@ -143,90 +164,99 @@ class ComfyUIClient:
         output_url_base: str,
         workflow_filename: str | None = None
     ) -> str:
-        logger.info(f"Generation request received. Prompt starts with: '{args.prompt[:80]}...'")
-        client_id = str(uuid.uuid4())
-        workflow = self._load_workflow(workflow_filename)
-
-        # --- Inject Final Parameters into Workflow ---
-        # Prompts are assumed to be finalized by the time they reach this client.
-        positive_node = self._find_node_by_title(workflow, POSITIVE_PROMPT_TITLE)
-        if not positive_node:
-            raise WorkflowExecutionError(f"Node with title '{POSITIVE_PROMPT_TITLE}' not found in workflow.")
-        self._update_node_text_input(positive_node, POSITIVE_PROMPT_TITLE, args.prompt)
-
-        negative_node = self._find_node_by_title(workflow, NEGATIVE_PROMPT_TITLE)
-        if negative_node:
-            self._update_node_text_input(negative_node, NEGATIVE_PROMPT_TITLE, args.negative_prompt)
-
-        if args.aspect_ratio:
-            latent_node = self._find_node_by_title(workflow, LATENT_IMAGE_TITLE)
-            if latent_node:
-                width, height = ASPECT_RATIOS.get(args.aspect_ratio, DEFAULT_ASPECT_RATIO)
-                latent_node['inputs']['width'] = width
-                latent_node['inputs']['height'] = height
-                logger.info(f"Set aspect ratio to {args.aspect_ratio} ({width}x{height})")
-            else:
-                logger.warning(f"Aspect ratio '{args.aspect_ratio}' provided, but node '{LATENT_IMAGE_TITLE}' not found.")
-
-        logger.info("Queueing prompt on ComfyUI server...")
-        queue_response = await self._queue_prompt(workflow, client_id)
-        prompt_id = queue_response.get('prompt_id')
-        if not prompt_id:
-            raise WorkflowExecutionError(f"ComfyUI API did not return a prompt_id. Response: {queue_response}")
-        logger.info(f"Prompt queued with ID: {prompt_id}")
-
-        ws_url = f"ws://{self.server_address}/ws?clientId={client_id}"
-        logger.info(f"Connecting to WebSocket: {ws_url}")
         try:
-            async with asyncio.timeout(300):
-                async with websockets.connect(ws_url) as websocket:
-                    while True:
-                        message_data = await websocket.recv()
-                        message = json.loads(message_data)
-                        if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
-                            logger.info(f"Execution finished for prompt_id: {prompt_id}")
-                            break
-        except TimeoutError as e:
-            raise WorkflowExecutionError(f"Image generation timed out for prompt_id: {prompt_id}") from e
-        except (websockets.exceptions.WebSocketException, ConnectionRefusedError) as e:
-            raise ComfyUIConnectionError(f"Could not connect to ComfyUI WebSocket: {e}") from e
+            logger.info(f"Generation request received. Prompt starts with: '{args.prompt[:80]}...'")
+            client_id = str(uuid.uuid4())
+            workflow = self._load_workflow(workflow_filename)
 
-        history = await self._get_history(prompt_id)
-        outputs = history.get('outputs', {})
-        images_output = []
-        for node_output in outputs.values():
-            if 'images' in node_output:
-                images_output.extend(node_output['images'])
+            # --- Inject Final Parameters into Workflow ---
+            # ... (code inchangé)
+            positive_node = self._find_node_by_title(workflow, POSITIVE_PROMPT_TITLE)
+            if not positive_node:
+                raise WorkflowExecutionError(f"Node with title '{POSITIVE_PROMPT_TITLE}' not found in workflow.")
+            self._update_node_text_input(positive_node, POSITIVE_PROMPT_TITLE, args.prompt)
+            negative_node = self._find_node_by_title(workflow, NEGATIVE_PROMPT_TITLE)
+            if negative_node:
+                self._update_node_text_input(negative_node, NEGATIVE_PROMPT_TITLE, args.negative_prompt)
+            if args.aspect_ratio:
+                latent_node = self._find_node_by_title(workflow, LATENT_IMAGE_TITLE)
+                if latent_node:
+                    width, height = ASPECT_RATIOS.get(args.aspect_ratio, DEFAULT_ASPECT_RATIO)
+                    latent_node['inputs']['width'] = width
+                    latent_node['inputs']['height'] = height
+                    logger.info(f"Set aspect ratio to {args.aspect_ratio} ({width}x{height})")
+                else:
+                    logger.warning(f"Aspect ratio '{args.aspect_ratio}' provided, but node '{LATENT_IMAGE_TITLE}' not found.")
+
+            logger.info("Queueing prompt on ComfyUI server...")
+            queue_response = await self._queue_prompt(workflow, client_id)
+            prompt_id = queue_response.get('prompt_id')
+            if not prompt_id:
+                raise WorkflowExecutionError(f"ComfyUI API did not return a prompt_id. Response: {queue_response}")
+            logger.info(f"Prompt queued with ID: {prompt_id}")
+
+            ws_url = f"ws://{self.server_address}/ws?clientId={client_id}"
+            logger.info(f"Connecting to WebSocket: {ws_url}")
+            try:
+                async with asyncio.timeout(300):
+                    async with websockets.connect(ws_url) as websocket:
+                        while True:
+                            message_data = await websocket.recv()
+                            
+                            # --- WEBSOCKET DECODING FIX ---
+                            # Explicitly decode the message as UTF-8 before parsing JSON.
+                            if isinstance(message_data, bytes):
+                                message_str = message_data.decode('utf-8')
+                            else:
+                                message_str = message_data
+                            message = json.loads(message_str)
+                            
+                            if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
+                                logger.info(f"Execution finished for prompt_id: {prompt_id}")
+                                break
+            except TimeoutError as e:
+                raise WorkflowExecutionError(f"Image generation timed out for prompt_id: {prompt_id}") from e
+            except (websockets.exceptions.WebSocketException, ConnectionRefusedError) as e:
+                raise ComfyUIConnectionError(f"Could not connect to ComfyUI WebSocket: {e}") from e
+
+            history = await self._get_history(prompt_id)
+            outputs = history.get('outputs', {})
+            images_output = []
+            for node_output in outputs.values():
+                if 'images' in node_output:
+                    images_output.extend(node_output['images'])
+            
+            if not images_output:
+                logger.error(f"No images found in history output for prompt_id: {prompt_id}. Full history: {history}")
+                raise WorkflowExecutionError(f"No images found in the output for prompt_id: {prompt_id}")
+
+            image_info = images_output[0]
+            filename = image_info.get('filename')
+            subfolder = image_info.get('subfolder', '')
+            image_type = image_info.get('type', 'output')
+            
+            if not filename:
+                raise WorkflowExecutionError(f"History output for prompt_id {prompt_id} is missing a filename.")
+            
+            logger.info(f"Downloading generated image: {filename} (type: {image_type}, subfolder: '{subfolder}')")
+            image_data = await self._get_image_data(filename, subfolder, image_type)
+
+            try:
+                safe_filename = Path(filename).name
+                output_path = Path(output_dir_path) / safe_filename
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(output_path, 'wb') as f:
+                    f.write(image_data)
+                logger.info(f"Image saved to: {output_path}")
+            except OSError as e:
+                raise ComfyUIError(f"Failed to save image to disk: {e}") from e
+
+            final_url = f"{output_url_base.rstrip('/')}/{safe_filename}"
+            logger.info(f"Returning public URL: {final_url}")
+            return final_url
         
-        if not images_output:
-            logger.error(f"No images found in history output for prompt_id: {prompt_id}. Full history: {history}")
-            raise WorkflowExecutionError(f"No images found in the output for prompt_id: {prompt_id}")
-
-        # Get the first image from the list
-        image_info = images_output[0]
-        filename = image_info.get('filename')
-        subfolder = image_info.get('subfolder', '')
-        image_type = image_info.get('type', 'output')
-        
-        if not filename:
-            raise WorkflowExecutionError(f"History output for prompt_id {prompt_id} is missing a filename.")
-        
-        logger.info(f"Downloading generated image: {filename} (type: {image_type}, subfolder: '{subfolder}')")
-        image_data = await self._get_image_data(filename, subfolder, image_type)
-
-        try:
-            # Ensure the final filename doesn't contain subdirectories
-            safe_filename = Path(filename).name
-            output_path = Path(output_dir_path) / safe_filename
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, 'wb') as f:
-                f.write(image_data)
-            logger.info(f"Image saved to: {output_path}")
-        except OSError as e:
-            raise ComfyUIError(f"Failed to save image to disk: {e}") from e
-
-        final_url = f"{output_url_base.rstrip('/')}/{safe_filename}"
-        logger.info(f"Returning public URL: {final_url}")
-        return final_url
-
-# NOTE: Global comfyui_client instance has been removed.
+        except Exception as e:
+            logger.error(f"An unhandled exception occurred in generate_image", exc_info=True)
+            raise e
+        finally:
+            logger.info("generate_image function finished execution (either success or failure).")

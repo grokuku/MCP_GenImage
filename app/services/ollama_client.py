@@ -51,8 +51,8 @@ class OllamaClient:
         self.model_name = model_name
         self.keep_alive = keep_alive
         self.context_window = context_window
-        # Set a reasonable timeout for API calls
-        self.client = httpx.AsyncClient(base_url=self.api_url, timeout=60.0)
+        # Set a much longer timeout for potentially slow LLM models
+        self.client = httpx.AsyncClient(base_url=self.api_url, timeout=180.0)
         logger.info(f"Ollama client instantiated for model '{self.model_name}' at {self.api_url}")
 
     async def _generate(self, messages: List[Dict[str, str]]) -> str:
@@ -85,6 +85,9 @@ class OllamaClient:
             logger.debug(f"Received and cleaned response from Ollama: {content}")
             return content
 
+        except httpx.TimeoutException as e:
+            logger.error(f"Ollama request timed out after {self.client.timeout.read} seconds: {e}")
+            raise OllamaError(f"Ollama server at {self.api_url} took too long to respond.") from e
         except httpx.RequestError as e:
             logger.error(f"An HTTP request error occurred when contacting Ollama: {e}")
             raise OllamaError(f"Could not connect to Ollama server at {self.api_url}. Is it running?") from e

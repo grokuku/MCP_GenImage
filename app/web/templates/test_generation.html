@@ -202,11 +202,11 @@
                 const result = data.result;
                 if (result && Array.isArray(result.content) && result.content.length > 0) {
                     const toolOutput = result.content[0];
-                    if (toolOutput.type === 'text' && toolOutput.text) {
-                        resultImage.src = toolOutput.text;
+                    if (toolOutput.type === 'image' && toolOutput.source) {
+                        resultImage.src = toolOutput.source;
                         imageResult.style.display = 'block';
                     } else {
-                        throw new Error('Server returned a valid but unexpected content type.');
+                        throw new Error('Server returned a valid but unexpected content type. Expected an image.');
                     }
                 } else {
                     throw new Error('Invalid response format from server.');

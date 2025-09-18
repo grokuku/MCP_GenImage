@@ -22,14 +22,18 @@ Generates an image based on a textual description by processing it through a Com
 
 ### Output
 
-Returns a JSON object containing the URL of the generated image, within the standard MCP `content` structure.
+Returns a JSON object containing a list with a single content object representing the generated image, within the standard MCP `result` structure.
 
 **Example Structure:**
 ```json
 {
-    "content": {
-        "type": "image",
-        "source": "http://your_public_url:8001/outputs/ComfyUI_00001_.png"
+    "result": {
+        "content": [
+            {
+                "type": "image",
+                "source": "http://your_public_url:8001/outputs/ComfyUI_00001_.png"
+            }
+        ]
     }
 }
 ```

@@ -1,11 +1,14 @@
+####
 # app/api/mcp_routes.py
+####
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError, BaseModel
 from sqlalchemy.orm import Session
 import logging
 import time
-from typing import Optional
+from typing import Optional, Dict, Any
+import copy
 
 from ..schemas import (
     JsonRpcRequest,
@@ -145,7 +148,21 @@ async def _process_prompts(args: GenerateImageParams, db: Session) -> tuple[str,
     return final_prompt, final_negative_prompt, final_render_type
 
 
+def _log_generation_result(db: Session, log_data: Dict[str, Any]):
+    """
+    Safely creates a generation log entry. This function must not raise exceptions.
+    """
+    try:
+        log_entry = GenerationLogCreate(**log_data)
+        crud.create_generation_log(db, log=log_entry)
+    except Exception as e:
+        logger.error("!!! CRITICAL: FAILED TO SAVE GENERATION LOG TO DATABASE !!!")
+        logger.error(f"Logging data was: {log_data}")
+        logger.error(f"Database error: {e}", exc_info=True)
+
+
 # --- Web UI Helper API Endpoints ---
+# ... (contenu inchangé)
 
 @router.post("/api/v1/process-prompts", response_model=dict)
 async def process_prompts_endpoint(params: GenerateImageParams, db: Session = Depends(get_db)):
@@ -211,48 +228,50 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
     request_id = rpc_request.id
 
     if rpc_request.method == "tools/list":
-        return JsonRpcResponse(result={"tools": [GENERATE_IMAGE_TOOL_DEF]}, id=request_id)
+        # ... (contenu inchangé)
+        tool_def = copy.deepcopy(GENERATE_IMAGE_TOOL_DEF)
+        styles = crud.get_styles(db)
+        render_types = crud.get_render_types(db)
+        style_names = [s.name for s in styles]
+        render_type_names = [rt.name for rt in render_types]
+        if style_names:
+            tool_def["inputSchema"]["properties"]["style_names"]["enum"] = style_names
+        if render_type_names:
+            tool_def["inputSchema"]["properties"]["render_type"]["enum"] = render_type_names
+        return JsonRpcResponse(result={"tools": [tool_def]}, id=request_id)
 
     if rpc_request.method == "tools/call":
-        response_to_send = None
-        
-        # Variables for the generation log, initialized with defaults
-        log_status = "FAILED"
-        log_duration_ms = None
-        log_error_message = None
-        log_image_filename = None
-        comfyui_instance_id = None
-        final_prompt = ""
-        final_negative_prompt = ""
-        log_render_type = None
-        log_style_names = None
-        log_aspect_ratio = None
-        log_llm_enhanced = False
-        start_time = None
+        start_time = time.monotonic()
+        log_data = {
+            "positive_prompt": "", "negative_prompt": "", "render_type_name": None,
+            "style_names": None, "aspect_ratio": None, "seed": None, "llm_enhanced": False,
+            "status": "FAILED", "duration_ms": None, "error_message": None,
+            "image_filename": None, "comfyui_instance_id": None
+        }
 
         try:
             params = ToolCallParams.model_validate(rpc_request.params)
             args = params.arguments
 
-            # As soon as we have args, populate the log variables
-            log_aspect_ratio = args.aspect_ratio
-            log_llm_enhanced = args.enhance_prompt
-            log_style_names = ", ".join(args.style_names) if args.style_names else None
-
-            # Store original prompts for logging in case processing fails
-            final_prompt = args.prompt
-            final_negative_prompt = args.negative_prompt
+            log_data.update({
+                "aspect_ratio": args.aspect_ratio,
+                "llm_enhanced": args.enhance_prompt,
+                "style_names": ", ".join(args.style_names) if args.style_names else None,
+                "positive_prompt": args.prompt,
+                "negative_prompt": args.negative_prompt
+            })
 
             if params.name != "generate_image":
                 raise ValueError(f"Tool '{params.name}' not found.")
 
             final_prompt, final_negative_prompt, final_render_type = await _process_prompts(args, db)
-            log_render_type = final_render_type
-
-            final_args = args.model_copy(update={
-                'prompt': final_prompt,
-                'negative_prompt': final_negative_prompt
+            log_data.update({
+                "positive_prompt": final_prompt,
+                "negative_prompt": final_negative_prompt,
+                "render_type_name": final_render_type
             })
+
+            final_args = args.model_copy(update={'prompt': final_prompt, 'negative_prompt': final_negative_prompt})
 
             db_settings = crud.get_all_settings(db)
             output_url_base = db_settings.get("OUTPUT_URL_BASE")
@@ -262,81 +281,76 @@ async def mcp_endpoint(request: Request, db: Session = Depends(get_db)):
             active_instance = crud.get_active_comfyui_instance(db)
             if not active_instance:
                 raise ValueError("No active ComfyUI server is configured.")
-            comfyui_instance_id = active_instance.id
+            log_data["comfyui_instance_id"] = active_instance.id
             
             workflow_to_use = None
             default_workflow_path_from_db = None
 
-            if final_render_type: # Use the potentially updated render type
+            if final_render_type:
                 render_type_obj = crud.get_render_type_by_name(db, name=final_render_type)
-                if not render_type_obj:
-                    raise ValueError(f"Render type '{final_render_type}' not found.")
+                if not render_type_obj: raise ValueError(f"Render type '{final_render_type}' not found.")
                 workflow_to_use = render_type_obj.workflow_filename
                 logger.info(f"Using workflow: '{workflow_to_use}' for render type '{final_render_type}'")
             else:
-                # If no render type is specified, find the default one in the database
                 default_render_type = crud.get_default_render_type(db)
-                if not default_render_type:
-                    raise ValueError("No default workflow is configured in the Render Types settings.")
+                if not default_render_type: raise ValueError("No default workflow is configured.")
                 default_workflow_path_from_db = default_render_type.workflow_filename
                 logger.info(f"Using default workflow from database: '{default_workflow_path_from_db}'")
 
-            # The default_workflow_path in the client is now a fallback for a fallback.
-            # The primary default is determined here.
             comfyui_client = ComfyUIClient(
                 api_url=active_instance.base_url,
                 default_workflow_path=f"/app/workflows/{default_workflow_path_from_db}" if default_workflow_path_from_db else "/app/workflows/workflow_api.json"
             )
             
-            start_time = time.monotonic()
             logger.info("Calling ComfyUI client to generate image.")
             image_url = await comfyui_client.generate_image(
-                args=final_args,
-                output_dir_path="/app/outputs",
-                output_url_base=output_url_base,
-                workflow_filename=workflow_to_use
+                args=final_args, output_dir_path="/app/outputs",
+                output_url_base=output_url_base, workflow_filename=workflow_to_use
             )
             
-            log_status = "SUCCESS"
-            log_image_filename = image_url.split('/')[-1]
-            # Revert to the standard MCP format. The result is an array of content parts.
-            content_result = {"content": [{"type": "text", "text": image_url}]}
-            response_to_send = JsonRpcResponse(result=content_result, id=request_id)
+            log_data.update({
+                "status": "SUCCESS",
+                "image_filename": image_url.split('/')[-1],
+                "duration_ms": int((time.monotonic() - start_time) * 1000)
+            })
+            _log_generation_result(db, log_data)
+            
+            content_result = {"content": [{"type": "image", "source": image_url}]}
+            return JsonRpcResponse(result=content_result, id=request_id)
 
         except ValidationError as e:
-            log_error_message = f"Invalid parameters: {e}"
-            response_to_send = create_error_response(request_id, -32602, log_error_message)
+            error_message = f"Invalid parameters: {e}"
+            log_data.update({
+                "error_message": error_message,
+                "duration_ms": int((time.monotonic() - start_time) * 1000)
+            })
+            _log_generation_result(db, log_data)
+            return create_error_response(request_id, -32602, error_message)
         except ValueError as e:
-            log_error_message = str(e)
-            response_to_send = create_error_response(request_id, -32000, log_error_message)
+            error_message = str(e)
+            log_data.update({
+                "error_message": error_message,
+                "duration_ms": int((time.monotonic() - start_time) * 1000)
+            })
+            _log_generation_result(db, log_data)
+            return create_error_response(request_id, -32000, error_message)
         except (OllamaError, ComfyUIError) as e:
-            logger.error(f"Service error during 'tools/call': {e}")
-            log_error_message = f"Service error: {e}"
-            response_to_send = create_error_response(request_id, -32000, log_error_message)
+            logger.error(f"Service error during 'tools/call': {e}", exc_info=True)
+            error_message = f"Service error: {e}"
+            log_data.update({
+                "error_message": error_message,
+                "duration_ms": int((time.monotonic() - start_time) * 1000)
+            })
+            _log_generation_result(db, log_data)
+            return create_error_response(request_id, -32000, error_message)
         except Exception as e:
             logger.exception("Unexpected internal server error during 'tools/call'.")
-            log_error_message = f"Internal server error: {str(e)}"
-            response_to_send = create_error_response(request_id, -32603, "Internal server error.")
-        finally:
-            if start_time:
-                log_duration_ms = int((time.monotonic() - start_time) * 1000)
-            
-            log_entry = GenerationLogCreate(
-                positive_prompt=final_prompt,
-                negative_prompt=final_negative_prompt,
-                render_type_name=log_render_type,
-                style_names=log_style_names,
-                aspect_ratio=log_aspect_ratio,
-                seed=None, # Seed is not yet retrievable from ComfyUI client
-                llm_enhanced=log_llm_enhanced,
-                status=log_status,
-                duration_ms=log_duration_ms,
-                error_message=log_error_message,
-                image_filename=log_image_filename,
-                comfyui_instance_id=comfyui_instance_id
-            )
-            crud.create_generation_log(db, log=log_entry)
-            
-            return response_to_send
+            error_message = f"Internal server error: {str(e)}"
+            log_data.update({
+                "error_message": error_message,
+                "duration_ms": int((time.monotonic() - start_time) * 1000)
+            })
+            _log_generation_result(db, log_data)
+            return create_error_response(request_id, -32603, "Internal server error.")
     
     return create_error_response(request_id, -32601, f"Method '{rpc_request.method}' not found.")
