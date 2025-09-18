@@ -157,6 +157,10 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
     4.  Cette correction a révélé un dernier bug : l'image est générée et envoyée, mais un message d'erreur est quand même envoyé et le log est marqué comme `FAILED`. Le diagnostic pointe vers la logique de gestion d'erreurs et de journalisation dans `mcp_routes.py`. Une refactorisation a été tentée, mais n'a pas résolu le problème.
 *   **État à la fin :** Les bugs critiques de crash sont résolus. L'application est plus stable, mais un bug de logique persiste, indiquant un succès comme un échec. Le débogage est en pause, en attente de la prochaine session.
 
+### 16. Résolution du Bug de Journalisation et Déblocage de la Phase 6 (Session du 2025-09-18)
+*   **Résumé :** Diagnostic et résolution du dernier bug de journalisation. L'erreur `Expecting value: line 1 column 1 (char 0)` était causée par une "race condition" où l'application demandait l'historique d'une génération à l'API ComfyUI avant que celui-ci ne soit disponible, recevant une réponse vide. **Corrigé en implémentant un mécanisme de tentatives multiples (`retry`) avec délai dans la fonction `_get_history` de `comfyui_client.py`.**
+*   **État à la fin :** Le bug est résolu. Les générations sont maintenant journalisées comme `SUCCESS`. La Phase 5.5 est terminée et le projet est stable, débloquant le passage à la phase suivante.
+
 ---
 
 ## 10. État Actuel et Plan d'Action
@@ -180,13 +184,13 @@ Le développement se fera en suivant les phases ci-dessous pour une progression 
 *   **Phase 1 à 4.5 : Fondations, Workflows, Styles, Configuration, Statistiques**
     *   **Statut :** ✅ **Terminé**
 
-*   **Phase 5.5 : Résolution du Bug de Journalisation (Priorité Actuelle)**
+*   **Phase 5.5 : Résolution du Bug de Journalisation**
     *   **Objectif :** Corriger le bug où une génération réussie est signalée comme une erreur et enregistrée comme `FAILED` dans la base de données.
-    *   **Statut :** 🕒 **En cours**
+    *   **Statut :** ✅ **Terminé**
 
-*   **Phase 6 : Extension en Hub d'Outils d'Imagerie**
+*   **Phase 6 : Extension en Hub d'Outils d'Imagerie (Priorité Actuelle)**
     *   **Objectif :** Étendre les capacités du service en ajoutant les outils MCP `edit_image` et `upscale_image`.
-    *   **Statut :** ⏳ **Bloqué** par la Phase 5.5.
+    *   **Statut :** 🕒 **En cours**
 
 *   **Phase 5 : Gestion Multi-ComfyUI**
     *   **Objectif :** Permettre de configurer plusieurs serveurs ComfyUI et implémenter une répartition de charge.

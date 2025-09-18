@@ -34,6 +34,10 @@ ASPECT_RATIOS = {
 }
 DEFAULT_ASPECT_RATIO = (1024, 1024)
 
+# --- CONSTANTS FOR RETRY MECHANISM ---
+HISTORY_MAX_RETRIES = 10
+HISTORY_RETRY_DELAY = 0.5  # seconds
+
 
 # --- CUSTOM EXCEPTIONS ---
 class ComfyUIError(Exception):
@@ -129,33 +133,40 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(f"ComfyUI returned an error when downloading image: {e.response.status_code} - {e.response.text}") from e
 
     async def _get_history(self, prompt_id: str) -> dict:
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(f"{self.base_api_url}/history/{prompt_id}")
-                response.raise_for_status()
+        for attempt in range(HISTORY_MAX_RETRIES):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.get(f"{self.base_api_url}/history/{prompt_id}")
+                    response.raise_for_status()
 
                 raw_bytes = response.content
-                try:
-                    decoded_text = raw_bytes.decode('utf-8')
-                    history = json.loads(decoded_text)
-                    return history.get(prompt_id, {})
-                except UnicodeDecodeError as e:
-                    try:
-                        debug_dir = Path("data/debug")
-                        debug_dir.mkdir(exist_ok=True)
-                        debug_filepath = debug_dir / f"history_error_{prompt_id}.bin"
-                        with open(debug_filepath, "wb") as f:
-                            f.write(raw_bytes)
-                        logger.error(f"UNICODE DECODE ERROR during get_history. The corrupted response has been saved to: {debug_filepath}")
-                    except Exception as file_error:
-                        logger.critical(f"CRITICAL: FAILED TO SAVE DEBUG FILE for get_history. Error: {file_error}")
-                    
-                    raise ComfyUIError(f"UnicodeDecodeError in get_history: {e}") from e
+                if not raw_bytes:
+                    logger.warning(f"History for prompt {prompt_id} is empty (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
+                    await asyncio.sleep(HISTORY_RETRY_DELAY)
+                    continue
 
-        except httpx.RequestError as e:
-            raise ComfyUIConnectionError(f"Could not connect to ComfyUI to get history: {e}") from e
-        except httpx.HTTPStatusError as e:
-            raise ComfyUIConnectionError(f"ComfyUI returned an error when getting history: {e.response.status_code} - {e.response.text}") from e
+                decoded_text = raw_bytes.decode('utf-8')
+                history = json.loads(decoded_text)
+                
+                if prompt_id in history:
+                    logger.info(f"Successfully retrieved history for prompt {prompt_id} on attempt {attempt + 1}.")
+                    return history[prompt_id]
+                else:
+                    logger.warning(f"History for prompt {prompt_id} not yet available in response (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
+
+            except json.JSONDecodeError:
+                logger.warning(f"Received non-JSON response for history {prompt_id} (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
+            except UnicodeDecodeError as e:
+                logger.error(f"UNICODE DECODE ERROR during get_history for prompt {prompt_id}. This is unusual and should be investigated.", exc_info=True)
+                # This error is less likely to be solved by a retry, but we'll allow it to retry anyway.
+            except httpx.RequestError as e:
+                raise ComfyUIConnectionError(f"Could not connect to ComfyUI to get history: {e}") from e
+            except httpx.HTTPStatusError as e:
+                raise ComfyUIConnectionError(f"ComfyUI returned an error when getting history: {e.response.status_code} - {e.response.text}") from e
+            
+            await asyncio.sleep(HISTORY_RETRY_DELAY)
+        
+        raise WorkflowExecutionError(f"Failed to retrieve history for prompt_id {prompt_id} after {HISTORY_MAX_RETRIES} attempts.")
 
     async def generate_image(
         self,
@@ -170,14 +181,15 @@ class ComfyUIClient:
             workflow = self._load_workflow(workflow_filename)
 
             # --- Inject Final Parameters into Workflow ---
-            # ... (code inchangé)
             positive_node = self._find_node_by_title(workflow, POSITIVE_PROMPT_TITLE)
             if not positive_node:
                 raise WorkflowExecutionError(f"Node with title '{POSITIVE_PROMPT_TITLE}' not found in workflow.")
             self._update_node_text_input(positive_node, POSITIVE_PROMPT_TITLE, args.prompt)
+            
             negative_node = self._find_node_by_title(workflow, NEGATIVE_PROMPT_TITLE)
             if negative_node:
                 self._update_node_text_input(negative_node, NEGATIVE_PROMPT_TITLE, args.negative_prompt)
+            
             if args.aspect_ratio:
                 latent_node = self._find_node_by_title(workflow, LATENT_IMAGE_TITLE)
                 if latent_node:
@@ -206,10 +218,15 @@ class ComfyUIClient:
                             # --- WEBSOCKET DECODING FIX ---
                             # Explicitly decode the message as UTF-8 before parsing JSON.
                             if isinstance(message_data, bytes):
-                                message_str = message_data.decode('utf-8')
+                                message_str = message_data.decode('utf-8', errors='ignore')
                             else:
                                 message_str = message_data
-                            message = json.loads(message_str)
+                            
+                            try:
+                                message = json.loads(message_str)
+                            except json.JSONDecodeError:
+                                logger.warning(f"Received a non-JSON WebSocket message, ignoring: {message_str[:200]}")
+                                continue
                             
                             if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
                                 logger.info(f"Execution finished for prompt_id: {prompt_id}")
