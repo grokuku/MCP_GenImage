@@ -12,11 +12,13 @@ ENV PYTHONUNBUFFERED 1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code into the container
+# Copy the local 'app' directory into a subdirectory also named 'app' inside the container
+# This creates the /app/app structure, making 'app' a package.
 COPY ./app /app/app
 
 # Expose the port the app runs on
 EXPOSE 8000
 
-# Default command to run the application
+# Command to run the application. Uvicorn is run from /app,
+# so it can see and import the 'app' package.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

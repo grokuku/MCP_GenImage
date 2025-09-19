@@ -428,4 +428,82 @@ async def run_generation_task(
         })
         
         error_payload = {"code": -32603, "message": "Internal server error."}
-        await manager.send_mcp_mes
+        await manager.send_mcp_message(stream_id, {
+            "jsonrpc": "2.0",
+            "method": "stream/chunk",
+            "params": {"stream_id": stream_id, "error": error_payload}
+        })
+
+    finally:
+        _log_generation_result(db, log_data)
+        await manager.send_mcp_message(stream_id, {
+            "jsonrpc": "2.0",
+            "method": "stream/end",
+            "params": {"stream_id": stream_id}
+        })
+        manager.disconnect(stream_id)
+        db.close()
+
+@router.post("/mcp")
+async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    try:
+        rpc_request = JsonRpcRequest.model_validate(await request.json())
+    except Exception:
+        return create_error_response(None, -32700, "Invalid JSON received.")
+
+    request_id = rpc_request.id
+
+    if rpc_request.method == "tools/list":
+        tool_def = copy.deepcopy(GENERATE_IMAGE_TOOL_DEF)
+        styles = crud.get_styles(db)
+        render_types = crud.get_render_types(db)
+        style_names = [s.name for s in styles]
+        render_type_names = [rt.name for rt in render_types]
+        if style_names:
+            tool_def["inputSchema"]["properties"]["style_names"]["enum"] = style_names
+        if render_type_names:
+            tool_def["inputSchema"]["properties"]["render_type"]["enum"] = render_type_names
+        return JsonRpcResponse(result={"tools": [tool_def]}, id=request_id)
+
+    if rpc_request.method == "tools/call":
+        try:
+            params = ToolCallParams.model_validate(rpc_request.params)
+            if params.name != "generate_image":
+                raise ValueError(f"Tool '{params.name}' not found.")
+
+            # --- Streaming Response ---
+            stream_id = str(uuid.uuid4())
+            
+            # Construct WebSocket URL from request
+            scheme = "ws" if request.url.scheme == "http" else "wss"
+            ws_url = f"{scheme}://{request.url.hostname}:{request.url.port}/ws/stream/{stream_id}"
+            
+            # Schedule the long-running task
+            background_tasks.add_task(
+                run_generation_task,
+                args=params.arguments,
+                request_id=request_id,
+                stream_id=stream_id
+            )
+
+            # Immediately respond with stream_start
+            response = {
+                "jsonrpc": "2.0",
+                "method": "stream/start",
+                "params": {
+                    "stream_id": stream_id,
+                    "ws_url": ws_url
+                },
+                "id": request_id
+            }
+            return JSONResponse(content=response)
+
+        except ValidationError as e:
+            return create_error_response(request_id, -32602, f"Invalid parameters: {e}")
+        except ValueError as e:
+            return create_error_response(request_id, -32000, str(e))
+        except Exception:
+            logger.exception("Unexpected internal server error during 'tools/call' setup.")
+            return create_error_response(request_id, -32603, "Internal server error during task setup.")
+    
+    return create_error_response(request_id, -32601, f"Method '{rpc_request.method}' not found.")
