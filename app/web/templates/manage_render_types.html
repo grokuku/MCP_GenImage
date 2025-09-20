@@ -11,6 +11,7 @@
         <thead>
             <tr>
                 <th>Default</th>
+                <th>Visible</th>
                 <th>Name</th>
                 <th>Workflow Filename</th>
                 <th>Prompt Examples</th>
@@ -25,6 +26,13 @@
                     <span title="This is the default workflow">✅</span>
                     {% endif %}
                 </td>
+                <td>
+                    {% if rt.is_visible %}
+                    <span title="Visible to end users">👁️</span>
+                    {% else %}
+                    <span title="Hidden from end users">🔒</span>
+                    {% endif %}
+                </td>
                 <td>{{ rt.name }}</td>
                 <td>{{ rt.workflow_filename }}</td>
                 <td>
@@ -33,7 +41,8 @@
                 <td>
                     <button type="button" class="btn btn-secondary edit-btn" data-id="{{ rt.id }}"
                         data-name="{{ rt.name }}" data-workflow-filename="{{ rt.workflow_filename }}"
-                        data-prompt-examples="{{ rt.prompt_examples or '' }}">Edit</button>
+                        data-prompt-examples="{{ rt.prompt_examples or '' }}"
+                        data-is-visible="{{ 'true' if rt.is_visible else 'false' }}">Edit</button>
 
                     {% if not rt.is_default %}
                     <form action="/render-types/set-default/{{ rt.id }}" method="post" style="display: inline-block;">
@@ -49,7 +58,7 @@
             </tr>
             {% else %}
             <tr>
-                <td colspan="5" style="text-align: center;">No render types found.</td>
+                <td colspan="6" style="text-align: center;">No render types found.</td>
             </tr>
             {% endfor %}
         </tbody>
@@ -72,6 +81,12 @@
                 <textarea id="prompt_examples" name="prompt_examples" rows="4"
                     placeholder="Provide one or more examples of good prompts for this render type, separated by line breaks."></textarea>
             </div>
+            <div class="form-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="is_visible" name="is_visible" value="true" checked>
+                    Visible to users (listed in the '/image' command)
+                </label>
+            </div>
             <button id="submit-btn" type="submit" class="btn btn-primary">Add Render Type</button>
             <button id="cancel-btn" type="button" class="btn btn-secondary" style="display: none;">Cancel</button>
         </form>
@@ -89,6 +104,7 @@
     const nameInput = document.getElementById('name');
     const workflowInput = document.getElementById('workflow_filename');
     const examplesInput = document.getElementById('prompt_examples');
+    const isVisibleInput = document.getElementById('is_visible');
 
     function editRenderType(button) {
         const id = button.dataset.id;
@@ -102,6 +118,7 @@
         nameInput.value = button.dataset.name;
         workflowInput.value = button.dataset.workflowFilename;
         examplesInput.value = button.dataset.promptExamples;
+        isVisibleInput.checked = button.dataset.isVisible === 'true';
 
         form.scrollIntoView({ behavior: 'smooth' });
     }

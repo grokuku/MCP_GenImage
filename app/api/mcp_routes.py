@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any, List
 import copy
 import asyncio
 import uuid
+from urllib.parse import urlparse # Import urlparse
 
 from ..schemas import (
     JsonRpcRequest,
@@ -114,17 +115,17 @@ async def _process_prompts(args: GenerateImageParams, db: Session) -> tuple[str,
                 compatible_names = [rt.name for rt in style.compatible_render_types]
                 if final_render_type not in compatible_names:
                     logger.warning(f"Style '{style_name}' is not compatible with render type '{final_render_type}'. Compatible: {compatible_names}")
-                    if style.recommended_render_type:
-                        new_render_type = style.recommended_render_type.name
-                        logger.info(f"Switching to recommended render type from style '{style_name}': '{new_render_type}'")
+                    if style.default_render_type:
+                        new_render_type = style.default_render_type.name
+                        logger.info(f"Switching to default render type from style '{style_name}': '{new_render_type}'")
                         final_render_type = new_render_type
                         # A switch has occurred, the next style in the list will be checked against this new render_type
             
-            # Case B: No render type is set yet, check for a recommendation to adopt
+            # Case B: No render type is set yet, check for a default to adopt
             else:
-                if style.recommended_render_type:
-                    new_render_type = style.recommended_render_type.name
-                    logger.info(f"No render type specified. Adopting recommended type '{new_render_type}' from style '{style_name}'.")
+                if style.default_render_type:
+                    new_render_type = style.default_render_type.name
+                    logger.info(f"No render type specified. Adopting default type '{new_render_type}' from style '{style_name}'.")
                     final_render_type = new_render_type
 
     # --- 3. Apply styles ---
@@ -456,13 +457,17 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
     if rpc_request.method == "tools/list":
         tool_def = copy.deepcopy(GENERATE_IMAGE_TOOL_DEF)
         styles = crud.get_styles(db)
-        render_types = crud.get_render_types(db)
+        # Fetch only render types visible to the user
+        render_types = crud.get_render_types(db, visible_only=True)
         style_names = [s.name for s in styles]
         render_type_names = [rt.name for rt in render_types]
         if style_names:
             tool_def["inputSchema"]["properties"]["style_names"]["enum"] = style_names
         if render_type_names:
             tool_def["inputSchema"]["properties"]["render_type"]["enum"] = render_type_names
+        else:
+            # If no render types are visible, remove the property from the tool definition
+            del tool_def["inputSchema"]["properties"]["render_type"]
         return JsonRpcResponse(result={"tools": [tool_def]}, id=request_id)
 
     if rpc_request.method == "tools/call":
@@ -474,9 +479,22 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             # --- Streaming Response ---
             stream_id = str(uuid.uuid4())
             
-            # Construct WebSocket URL from request
-            scheme = "ws" if request.url.scheme == "http" else "wss"
-            ws_url = f"{scheme}://{request.url.hostname}:{request.url.port}/ws/stream/{stream_id}"
+            # --- MODIFICATION START: Use configured public URL for WebSocket ---
+            db_settings = crud.get_all_settings(db)
+            public_url_base = db_settings.get("PUBLIC_URL_BASE")
+
+            if public_url_base:
+                parsed_url = urlparse(public_url_base)
+                scheme = "ws" if parsed_url.scheme == "http" else "wss"
+                # Construct the URL from the configured base, preserving the path
+                ws_url = f"{scheme}://{parsed_url.netloc}/ws/stream/{stream_id}"
+                logger.info(f"Generated public-facing WebSocket URL: {ws_url}")
+            else:
+                # Fallback to the old behavior if the setting is not present
+                logger.warning("PUBLIC_URL_BASE setting not found. Falling back to request-based URL construction. This may fail in cross-machine setups.")
+                scheme = "ws" if request.url.scheme == "http" else "wss"
+                ws_url = f"{scheme}://{request.url.hostname}:{request.url.port}/ws/stream/{stream_id}"
+            # --- MODIFICATION END ---
             
             # Schedule the long-running task
             background_tasks.add_task(

@@ -10,11 +10,11 @@
     <table>
         <thead>
             <tr>
-                <th>Default</th>
+                <th>Default Style</th>
                 <th>Name</th>
                 <th>Category</th>
                 <th>Compatible Render Types</th>
-                <th>Recommended Render Type</th>
+                <th>Default Render Type</th>
                 <th>Actions</th>
             </tr>
         </thead>
@@ -32,7 +32,7 @@
                     {{ st.compatible_render_types | map(attribute='name') | join(', ') }}
                 </td>
                 <td>
-                    {{ st.recommended_render_type.name if st.recommended_render_type else 'N/A' }}
+                    {{ st.default_render_type.name if st.default_render_type else 'N/A' }}
                 </td>
                 <td class="actions">
                     <button type="button" class="btn btn-secondary edit-btn" data-id="{{ st.id }}"
@@ -40,7 +40,7 @@
                         data-prompt-template="{{ st.prompt_template }}"
                         data-negative-prompt-template="{{ st.negative_prompt_template }}"
                         data-compatible-ids="{{ st.compatible_render_types | map(attribute='id') | list }}"
-                        data-recommended-id="{{ st.recommended_render_type.id if st.recommended_render_type else '' }}">Edit</button>
+                        data-default-id="{{ st.default_render_type.id if st.default_render_type else '' }}">Edit</button>
                     <form action="/styles/toggle-default/{{ st.id }}" method="post" style="display: inline-block;">
                         <button type="submit" class="btn btn-secondary">
                             {{ 'Unset Default' if st.is_default else 'Set as Default' }}
@@ -96,8 +96,8 @@
             </div>
 
             <div class="form-group">
-                <label for="recommended_render_type">Recommended Render Type (Optional)</label>
-                <select id="recommended_render_type" name="recommended_render_type">
+                <label for="default_render_type">Default Render Type (Optional)</label>
+                <select id="default_render_type" name="default_render_type">
                     <option value="">-- Not selected --</option>
                     {% for rt in render_types %}
                     <option value="{{ rt.id }}">{{ rt.name }}</option>
@@ -120,12 +120,12 @@
     const categoryInput = document.getElementById('category');
     const promptTemplateInput = document.getElementById('prompt_template');
     const negativePromptTemplateInput = document.getElementById('negative_prompt_template');
-    const recommendedSelect = document.getElementById('recommended_render_type');
+    const defaultSelect = document.getElementById('default_render_type');
 
     function editStyle(button) {
         const id = button.dataset.id;
         const compatibleIds = JSON.parse(button.dataset.compatibleIds.replace(/'/g, '"'));
-        const recommendedId = button.dataset.recommendedId;
+        const defaultId = button.dataset.defaultId;
 
         // Populate form fields
         form.action = `/styles/update/${id}`;
@@ -143,8 +143,8 @@
             checkbox.checked = compatibleIds.includes(parseInt(checkbox.value));
         });
 
-        // Handle select for recommended type
-        recommendedSelect.value = recommendedId;
+        // Handle select for default type
+        defaultSelect.value = defaultId;
 
         // Scroll to the form for better user experience
         form.scrollIntoView({ behavior: 'smooth' });

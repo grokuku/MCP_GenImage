@@ -37,6 +37,7 @@ class RenderType(Base):
     workflow_filename = Column(String, nullable=False)
     prompt_examples = Column(String, nullable=True) # New field
     is_default = Column(Boolean, default=False, nullable=False)
+    is_visible = Column(Boolean, default=True, nullable=False) # New field for user visibility
 
     # Back-populates the many-to-many relationship from Style
     compatible_styles = relationship(
@@ -45,10 +46,11 @@ class RenderType(Base):
         back_populates="compatible_render_types"
     )
 
-    # Back-populates the one-to-many relationship for recommended render type
-    styles_recommending_this = relationship(
+    # Back-populates the one-to-many relationship for default render type
+    styles_using_this_as_default = relationship(
         "Style",
-        back_populates="recommended_render_type"
+        back_populates="default_render_type",
+        foreign_keys="[Style.default_render_type_id]"
     )
 
     # Back-populates the many-to-many relationship from ComfyUIInstance
@@ -67,7 +69,7 @@ class Style(Base):
     Represents a style that can be applied to a prompt.
     A style consists of a name, a category, and templates for both the
     positive and negative prompts that get merged with the user's prompts.
-    It is also linked to compatible and recommended render types.
+    It is also linked to compatible and a default render types.
     """
     __tablename__ = "styles"
 
@@ -79,13 +81,14 @@ class Style(Base):
     is_active = Column(Boolean, default=True, nullable=False)
     is_default = Column(Boolean, default=False, nullable=False)
 
-    # Foreign key for the recommended render type (one-to-many)
-    recommended_render_type_id = Column(Integer, ForeignKey("render_types.id"), nullable=True)
+    # Foreign key for the default render type (one-to-many)
+    default_render_type_id = Column(Integer, ForeignKey("render_types.id"), nullable=True)
 
-    # Relationship for the recommended render type
-    recommended_render_type = relationship(
+    # Relationship for the default render type
+    default_render_type = relationship(
         "RenderType",
-        back_populates="styles_recommending_this"
+        back_populates="styles_using_this_as_default",
+        foreign_keys=[default_render_type_id]
     )
 
     # Relationship for compatible render types (many-to-many)

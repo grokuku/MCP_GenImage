@@ -97,8 +97,64 @@ GENERATE_IMAGE_TOOL_DEF = {
     }
 }
 
-# --- Database ORM Models ---
+# --- Database ORM Schemas ---
 
+# --- RenderType Schemas ---
+class RenderTypeBase(BaseModel):
+    name: str
+    workflow_filename: str
+    prompt_examples: Optional[str] = None
+    is_visible: bool = True
+
+class RenderTypeCreate(RenderTypeBase):
+    pass
+
+class RenderType(RenderTypeBase):
+    id: int
+    is_default: bool
+
+    class Config:
+        from_attributes = True
+
+# --- Style Schemas ---
+class StyleBase(BaseModel):
+    name: str
+    category: str
+    prompt_template: str
+    negative_prompt_template: str
+
+class StyleCreate(StyleBase):
+    compatible_render_type_ids: List[int] = []
+    default_render_type_id: Optional[int] = None
+
+class Style(StyleBase):
+    id: int
+    is_active: bool
+    is_default: bool
+    default_render_type_id: Optional[int] = None
+    default_render_type: Optional[RenderType] = None
+    compatible_render_types: List[RenderType] = []
+
+    class Config:
+        from_attributes = True
+
+# --- ComfyUI Schemas ---
+class ComfyUIInstanceBase(BaseModel):
+    name: str
+    base_url: str
+
+class ComfyUIInstanceCreate(ComfyUIInstanceBase):
+    compatible_render_type_ids: List[int] = []
+
+class ComfyUIInstance(ComfyUIInstanceBase):
+    id: int
+    is_active: bool
+    compatible_render_types: List[RenderType] = []
+
+    class Config:
+        from_attributes = True
+
+# --- GenerationLog Schemas ---
 class GenerationLogBase(BaseModel):
     positive_prompt: str
     negative_prompt: str

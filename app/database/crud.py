@@ -1,4 +1,4 @@
-from sqlalchemy import func
+# from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List
 
@@ -8,11 +8,15 @@ from .. import schemas
 
 # --- RenderType CRUD Operations ---
 
-def get_render_types(db: Session):
+def get_render_types(db: Session, visible_only: bool = False):
     """
     Retrieves all render types from the database.
+    If visible_only is True, retrieves only those marked as visible.
     """
-    return db.query(models.RenderType).order_by(models.RenderType.name).all()
+    query = db.query(models.RenderType)
+    if visible_only:
+        query = query.filter(models.RenderType.is_visible == True)
+    return query.order_by(models.RenderType.name).all()
 
 
 def get_render_type_by_id(db: Session, render_type_id: int):
@@ -36,14 +40,15 @@ def get_default_render_type(db: Session) -> Optional[models.RenderType]:
     return db.query(models.RenderType).filter(models.RenderType.is_default == True).first()
 
 
-def create_render_type(db: Session, name: str, workflow_filename: str, prompt_examples: str):
+def create_render_type(db: Session, render_type: schemas.RenderTypeCreate):
     """
     Creates a new render type in the database.
     """
     db_render_type = models.RenderType(
-        name=name,
-        workflow_filename=workflow_filename,
-        prompt_examples=prompt_examples
+        name=render_type.name,
+        workflow_filename=render_type.workflow_filename,
+        prompt_examples=render_type.prompt_examples,
+        is_visible=render_type.is_visible
     )
     db.add(db_render_type)
     db.commit()
@@ -54,9 +59,7 @@ def create_render_type(db: Session, name: str, workflow_filename: str, prompt_ex
 def update_render_type(
     db: Session,
     render_type_id: int,
-    name: str,
-    workflow_filename: str,
-    prompt_examples: str
+    render_type: schemas.RenderTypeCreate
 ):
     """
     Updates an existing render type.
@@ -65,9 +68,10 @@ def update_render_type(
     if not db_render_type:
         return None
     
-    db_render_type.name = name
-    db_render_type.workflow_filename = workflow_filename
-    db_render_type.prompt_examples = prompt_examples
+    db_render_type.name = render_type.name
+    db_render_type.workflow_filename = render_type.workflow_filename
+    db_render_type.prompt_examples = render_type.prompt_examples
+    db_render_type.is_visible = render_type.is_visible
     
     db.commit()
     db.refresh(db_render_type)
@@ -116,33 +120,33 @@ def delete_render_type(db: Session, render_type_id: int):
 def get_styles(db: Session):
     """
     Retrieves all styles from the database, ordered by category then name.
-    Eagerly loads compatible and recommended render types.
+    Eagerly loads compatible and default render types.
     """
     return db.query(models.Style).options(
         joinedload(models.Style.compatible_render_types),
-        joinedload(models.Style.recommended_render_type)
+        joinedload(models.Style.default_render_type)
     ).order_by(models.Style.category, models.Style.name).all()
 
 
 def get_style_by_name(db: Session, name: str):
     """
     Retrieves a single style by its unique name.
-    Eagerly loads compatible and recommended render types.
+    Eagerly loads compatible and default render types.
     """
     return db.query(models.Style).options(
         joinedload(models.Style.compatible_render_types),
-        joinedload(models.Style.recommended_render_type)
+        joinedload(models.Style.default_render_type)
     ).filter(models.Style.name == name).first()
 
 
 def get_style_by_id(db: Session, style_id: int):
     """
     Retrieves a single style by its ID.
-    Eagerly loads compatible and recommended render types.
+    Eagerly loads compatible and default render types.
     """
     return db.query(models.Style).options(
         joinedload(models.Style.compatible_render_types),
-        joinedload(models.Style.recommended_render_type)
+        joinedload(models.Style.default_render_type)
     ).filter(models.Style.id == style_id).first()
 
 
@@ -167,31 +171,23 @@ def toggle_style_default_status(db: Session, style_id: int) -> Optional[models.S
     return db_style
 
 
-def create_style(
-    db: Session,
-    name: str,
-    category: str,
-    prompt_template: str,
-    negative_prompt_template: str,
-    compatible_render_type_ids: List[int],
-    recommended_render_type_id: Optional[int]
-):
+def create_style(db: Session, style: schemas.StyleCreate):
     """
     Creates a new style in the database and links it to its
-    compatible and recommended render types.
+    compatible and default render types.
     """
     compatible_types = []
-    if compatible_render_type_ids:
+    if style.compatible_render_type_ids:
         compatible_types = db.query(models.RenderType).filter(
-            models.RenderType.id.in_(compatible_render_type_ids)
+            models.RenderType.id.in_(style.compatible_render_type_ids)
         ).all()
 
     db_style = models.Style(
-        name=name,
-        category=category,
-        prompt_template=prompt_template,
-        negative_prompt_template=negative_prompt_template,
-        recommended_render_type_id=recommended_render_type_id,
+        name=style.name,
+        category=style.category,
+        prompt_template=style.prompt_template,
+        negative_prompt_template=style.negative_prompt_template,
+        default_render_type_id=style.default_render_type_id,
         compatible_render_types=compatible_types
     )
     db.add(db_style)
@@ -203,12 +199,7 @@ def create_style(
 def update_style(
     db: Session,
     style_id: int,
-    name: str,
-    category: str,
-    prompt_template: str,
-    negative_prompt_template: str,
-    compatible_render_type_ids: List[int],
-    recommended_render_type_id: Optional[int]
+    style: schemas.StyleCreate
 ):
     """
     Updates an existing style, including its relationships
@@ -219,17 +210,17 @@ def update_style(
         return None
 
     # Update scalar fields
-    db_style.name = name
-    db_style.category = category
-    db_style.prompt_template = prompt_template
-    db_style.negative_prompt_template = negative_prompt_template
-    db_style.recommended_render_type_id = recommended_render_type_id
+    db_style.name = style.name
+    db_style.category = style.category
+    db_style.prompt_template = style.prompt_template
+    db_style.negative_prompt_template = style.negative_prompt_template
+    db_style.default_render_type_id = style.default_render_type_id
 
     # Update many-to-many relationship
     compatible_types = []
-    if compatible_render_type_ids:
+    if style.compatible_render_type_ids:
         compatible_types = db.query(models.RenderType).filter(
-            models.RenderType.id.in_(compatible_render_type_ids)
+            models.RenderType.id.in_(style.compatible_render_type_ids)
         ).all()
     db_style.compatible_render_types = compatible_types
 
@@ -316,28 +307,26 @@ def get_all_active_comfyui_instances(db: Session) -> List[models.ComfyUIInstance
 
 def create_comfyui_instance(
     db: Session,
-    name: str,
-    base_url: str,
-    compatible_render_type_ids: List[int]
+    comfyui_instance: schemas.ComfyUIInstanceCreate
 ):
     """
     Creates a new ComfyUI instance and links it to compatible render types.
     """
     exists = db.query(models.ComfyUIInstance).filter(
-        (models.ComfyUIInstance.name == name) | (models.ComfyUIInstance.base_url == base_url)
+        (models.ComfyUIInstance.name == comfyui_instance.name) | (models.ComfyUIInstance.base_url == comfyui_instance.base_url)
     ).first()
     if exists:
         return None
 
     compatible_types = []
-    if compatible_render_type_ids:
+    if comfyui_instance.compatible_render_type_ids:
         compatible_types = db.query(models.RenderType).filter(
-            models.RenderType.id.in_(compatible_render_type_ids)
+            models.RenderType.id.in_(comfyui_instance.compatible_render_type_ids)
         ).all()
 
     db_instance = models.ComfyUIInstance(
-        name=name,
-        base_url=base_url,
+        name=comfyui_instance.name,
+        base_url=comfyui_instance.base_url,
         compatible_render_types=compatible_types
     )
     db.add(db_instance)
@@ -349,9 +338,7 @@ def create_comfyui_instance(
 def update_comfyui_instance(
     db: Session,
     instance_id: int,
-    name: str,
-    base_url: str,
-    compatible_render_type_ids: List[int]
+    comfyui_instance: schemas.ComfyUIInstanceCreate
 ):
     """
     Updates an existing ComfyUI instance, including its compatible render types.
@@ -360,13 +347,13 @@ def update_comfyui_instance(
     if not db_instance:
         return None
 
-    db_instance.name = name
-    db_instance.base_url = base_url
+    db_instance.name = comfyui_instance.name
+    db_instance.base_url = comfyui_instance.base_url
 
     compatible_types = []
-    if compatible_render_type_ids:
+    if comfyui_instance.compatible_render_type_ids:
         compatible_types = db.query(models.RenderType).filter(
-            models.RenderType.id.in_(compatible_render_type_ids)
+            models.RenderType.id.in_(comfyui_instance.compatible_render_type_ids)
         ).all()
     db_instance.compatible_render_types = compatible_types
 
@@ -441,6 +428,8 @@ def get_prompt_enhancement_count(db: Session) -> int:
         models.GenerationLog.llm_enhanced == True
     ).count()
 
+
+from sqlalchemy import func
 
 def get_usage_count_by_render_type(db: Session) -> List[tuple[str, int]]:
     """

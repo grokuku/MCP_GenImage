@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 import logging
 import collections
 
-from app.database import crud
-from app.database.session import get_db
+from ..database import crud
+from ..database.session import get_db
+from .. import schemas
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -36,7 +37,8 @@ async def test_generation_page(request: Request, db: Session = Depends(get_db)):
     Displays the main interface for testing the image generation process.
     """
     styles = crud.get_styles(db)
-    render_types = crud.get_render_types(db)
+    # Fetch only visible render types for the UI
+    render_types = crud.get_render_types(db, visible_only=True)
     return templates.TemplateResponse(
         "test_generation.html",
         {
@@ -108,6 +110,7 @@ async def handle_add_render_type(
     name: str = Form(...),
     workflow_filename: str = Form(...),
     prompt_examples: str = Form(""),
+    is_visible: bool = Form(False),
     db: Session = Depends(get_db)
 ):
     """
@@ -117,12 +120,13 @@ async def handle_add_render_type(
     if existing_type:
         logger.warning(f"Attempted to create a duplicate render type: {name}")
     else:
-        crud.create_render_type(
-            db,
+        render_type_data = schemas.RenderTypeCreate(
             name=name,
             workflow_filename=workflow_filename,
-            prompt_examples=prompt_examples
+            prompt_examples=prompt_examples,
+            is_visible=is_visible
         )
+        crud.create_render_type(db, render_type=render_type_data)
     return RedirectResponse(url="/render-types", status_code=303)
 
 
@@ -132,17 +136,22 @@ async def handle_update_render_type(
     name: str = Form(...),
     workflow_filename: str = Form(...),
     prompt_examples: str = Form(""),
+    is_visible: bool = Form(False),
     db: Session = Depends(get_db)
 ):
     """
     Handles updating an existing render type.
     """
+    render_type_data = schemas.RenderTypeCreate(
+        name=name,
+        workflow_filename=workflow_filename,
+        prompt_examples=prompt_examples,
+        is_visible=is_visible
+    )
     crud.update_render_type(
         db,
         render_type_id=render_type_id,
-        name=name,
-        workflow_filename=workflow_filename,
-        prompt_examples=prompt_examples
+        render_type=render_type_data
     )
     return RedirectResponse(url="/render-types", status_code=303)
 
@@ -179,7 +188,8 @@ async def manage_styles(request: Request, db: Session = Depends(get_db)):
     Displays the page for managing styles.
     """
     styles = crud.get_styles(db)
-    render_types = crud.get_render_types(db) # Fetch render types for the form
+    # Fetch all render types for the form, including hidden ones
+    render_types = crud.get_render_types(db)
     return templates.TemplateResponse(
         "manage_styles.html",
         {
@@ -200,7 +210,7 @@ async def handle_add_style(
     prompt_template: str = Form(...),
     negative_prompt_template: str = Form(""),
     compatible_render_types: List[int] = Form([]),
-    recommended_render_type: Optional[int] = Form(None)
+    default_render_type: Optional[int] = Form(None)
 ):
     """
     Handles the creation of a new style.
@@ -209,15 +219,15 @@ async def handle_add_style(
     if existing_style:
         logger.warning(f"Attempted to create a duplicate style: {name}")
     else:
-        crud.create_style(
-            db=db,
+        style_data = schemas.StyleCreate(
             name=name,
             category=category,
             prompt_template=prompt_template,
             negative_prompt_template=negative_prompt_template,
             compatible_render_type_ids=compatible_render_types,
-            recommended_render_type_id=recommended_render_type
+            default_render_type_id=default_render_type
         )
+        crud.create_style(db=db, style=style_data)
     return RedirectResponse(url="/styles", status_code=303)
 
 
@@ -230,21 +240,20 @@ async def handle_update_style(
     prompt_template: str = Form(...),
     negative_prompt_template: str = Form(""),
     compatible_render_types: List[int] = Form([]),
-    recommended_render_type: Optional[int] = Form(None)
+    default_render_type: Optional[int] = Form(None)
 ):
     """
     Handles updating an existing style.
     """
-    crud.update_style(
-        db=db,
-        style_id=style_id,
+    style_data = schemas.StyleCreate(
         name=name,
         category=category,
         prompt_template=prompt_template,
         negative_prompt_template=negative_prompt_template,
         compatible_render_type_ids=compatible_render_types,
-        recommended_render_type_id=recommended_render_type
+        default_render_type_id=default_render_type
     )
+    crud.update_style(db=db, style_id=style_id, style=style_data)
     return RedirectResponse(url="/styles", status_code=303)
 
 
@@ -299,12 +308,12 @@ async def handle_add_comfyui_instance(
     """
     Handles adding a new ComfyUI instance.
     """
-    instance = crud.create_comfyui_instance(
-        db,
+    instance_data = schemas.ComfyUIInstanceCreate(
         name=name,
         base_url=base_url.strip(),
         compatible_render_type_ids=compatible_render_types
     )
+    instance = crud.create_comfyui_instance(db, comfyui_instance=instance_data)
     if not instance:
         logger.warning(f"Attempted to create a ComfyUI instance with a duplicate name or URL: {name} / {base_url}")
     return RedirectResponse(url="/settings/comfyui", status_code=303)
@@ -321,12 +330,15 @@ async def handle_update_comfyui_instance(
     """
     Handles updating an existing ComfyUI instance.
     """
-    crud.update_comfyui_instance(
-        db,
-        instance_id=instance_id,
+    instance_data = schemas.ComfyUIInstanceCreate(
         name=name,
         base_url=base_url.strip(),
         compatible_render_type_ids=compatible_render_types
+    )
+    crud.update_comfyui_instance(
+        db,
+        instance_id=instance_id,
+        comfyui_instance=instance_data
     )
     return RedirectResponse(url="/settings/comfyui", status_code=303)
 
