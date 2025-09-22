@@ -1,7 +1,7 @@
 # This file will contain our SQLAlchemy models.
 # We will add models for Styles, Workflows, Statistics, etc., in future steps.
 
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Table
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Table, BigInteger
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -35,9 +35,11 @@ class RenderType(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True, nullable=False)
     workflow_filename = Column(String, nullable=False)
-    prompt_examples = Column(String, nullable=True) # New field
-    is_default = Column(Boolean, default=False, nullable=False)
-    is_visible = Column(Boolean, default=True, nullable=False) # New field for user visibility
+    prompt_examples = Column(String, nullable=True)
+    is_visible = Column(Boolean, default=True, nullable=False)
+    generation_mode = Column(String(50), nullable=False, default='image_generation', server_default='image_generation')
+    is_default_for_generation = Column(Boolean, default=False, nullable=False)
+    is_default_for_upscale = Column(Boolean, default=False, nullable=False)
 
     # Back-populates the many-to-many relationship from Style
     compatible_styles = relationship(
@@ -155,7 +157,7 @@ class GenerationLog(Base):
     render_type_name = Column(String, nullable=True)
     style_names = Column(String, nullable=True)
     aspect_ratio = Column(String, nullable=True)
-    seed = Column(String, nullable=True)
+    seed = Column(BigInteger, nullable=True)
     llm_enhanced = Column(Boolean, default=False, nullable=False)
     
     # Generation Outcome

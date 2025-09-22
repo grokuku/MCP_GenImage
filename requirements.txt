@@ -7,3 +7,4 @@ sqlalchemy
 alembic
 jinja2
 python-multipart
+aiohttp

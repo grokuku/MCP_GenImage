@@ -6,33 +6,13 @@ import uuid
 import asyncio
 from pathlib import Path
 import logging
+from urllib.parse import urlparse
+import aiohttp
 
-# NOTE: The direct import of 'settings' and the global client instance
-# have been removed. The client will now be instantiated dynamically.
 from ..schemas import GenerateImageParams
 
 # Setup logger
 logger = logging.getLogger(__name__)
-
-# --- WORKFLOW NODE TITLES ---
-# These titles must match the titles set in the ComfyUI workflow's node properties.
-POSITIVE_PROMPT_TITLE = "Positive Prompt"
-NEGATIVE_PROMPT_TITLE = "Negative Prompt"
-LATENT_IMAGE_TITLE = "Latent Image"
-
-# --- ASPECT RATIO PRESETS ---
-# A dictionary to map aspect ratio strings to (width, height) tuples.
-# Common resolutions for SDXL models.
-ASPECT_RATIOS = {
-    "1:1": (1024, 1024),
-    "16:9": (1344, 768),
-    "9:16": (768, 1344),
-    "4:3": (1152, 896),
-    "3:4": (896, 1152),
-    "3:2": (1216, 832),
-    "2:3": (832, 1216)
-}
-DEFAULT_ASPECT_RATIO = (1024, 1024)
 
 # --- CONSTANTS FOR RETRY MECHANISM ---
 HISTORY_MAX_RETRIES = 10
@@ -48,10 +28,6 @@ class ComfyUIConnectionError(ComfyUIError):
     """Raised for network-related errors when connecting to ComfyUI."""
     pass
 
-class WorkflowFileNotFoundError(ComfyUIError):
-    """Raised when the workflow JSON file cannot be found."""
-    pass
-
 class WorkflowFileInvalidError(ComfyUIError):
     """Raised when the workflow JSON file is not valid JSON."""
     pass
@@ -62,58 +38,20 @@ class WorkflowExecutionError(ComfyUIError):
 
 
 class ComfyUIClient:
-    def __init__(self, api_url: str, default_workflow_path: str, generation_timeout: int):
+    def __init__(self, api_url: str, generation_timeout: int):
         self.server_address = api_url.replace('http://', '').replace('https://', '')
         self.base_api_url = api_url
-        self.default_workflow_path = Path(default_workflow_path)
-        self.workflows_dir = self.default_workflow_path.parent
-        self.http_timeout = httpx.Timeout(10.0, connect=5.0)  # Renamed for clarity
+        self.http_timeout = httpx.Timeout(10.0, connect=5.0)
         self.generation_timeout = generation_timeout
-
-    def _load_workflow(self, workflow_filename: str | None = None) -> dict:
-        if workflow_filename:
-            if ".." in workflow_filename or "/" in workflow_filename:
-                raise WorkflowFileNotFoundError(f"Invalid characters in workflow filename: {workflow_filename}")
-            target_path = self.workflows_dir / workflow_filename
-        else:
-            target_path = self.default_workflow_path
-
-        logger.info(f"Loading workflow from: {target_path}")
-        try:
-            with open(target_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except FileNotFoundError as e:
-            raise WorkflowFileNotFoundError(f"Workflow file not found at {target_path}") from e
-        except json.JSONDecodeError as e:
-            raise WorkflowFileInvalidError(f"Could not decode JSON from {target_path}") from e
-
-    def _find_node_by_title(self, workflow: dict, title: str) -> dict | None:
-        for node in workflow.values():
-            if isinstance(node, dict) and node.get("_meta", {}).get("title") == title:
-                return node
-        return None
-
-    def _update_node_text_input(self, node: dict, title: str, text: str):
-        if 'text' in node['inputs']:
-            node['inputs']['text'] = text
-        elif 'Text' in node['inputs']:
-            node['inputs']['Text'] = text
-        else:
-            raise WorkflowExecutionError(
-                f"Node with title '{title}' was found, but it has no known text input key."
-            )
-        logger.debug(f"Updated text in node titled '{title}'")
 
     async def _queue_prompt(self, workflow: dict, client_id: str) -> dict:
         try:
-            # Sérialiser explicitement le dictionnaire en JSON avec UTF-8
             payload = json.dumps({"prompt": workflow, "client_id": client_id}).encode('utf-8')
-            
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.post(
                     f"{self.base_api_url}/prompt",
-                    content=payload, # Utiliser 'content' au lieu de 'json'
-                    headers={'Content-Type': 'application/json'} # Spécifier l'en-tête
+                    content=payload,
+                    headers={'Content-Type': 'application/json'}
                 )
                 response.raise_for_status()
                 return response.json()
@@ -123,7 +61,6 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(f"ComfyUI returned an error when queueing prompt: {e.response.status_code} - {e.response.text}") from e
 
     async def _get_image_data(self, filename: str, subfolder: str, image_type: str) -> bytes:
-        logger.debug(f"Attempting to get image data from {self.base_api_url}")
         try:
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.get(f"{self.base_api_url}/view", params={'filename': filename, 'subfolder': subfolder, 'type': image_type})
@@ -135,33 +72,21 @@ class ComfyUIClient:
             raise ComfyUIConnectionError(f"ComfyUI returned an error when downloading image: {e.response.status_code} - {e.response.text}") from e
 
     async def _get_history(self, prompt_id: str) -> dict:
-        logger.debug(f"Attempting to get history for prompt {prompt_id} from {self.base_api_url}")
         for attempt in range(HISTORY_MAX_RETRIES):
             try:
                 async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                     response = await client.get(f"{self.base_api_url}/history/{prompt_id}")
                     response.raise_for_status()
 
-                raw_bytes = response.content
-                if not raw_bytes:
-                    logger.warning(f"History for prompt {prompt_id} is empty (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
-                    await asyncio.sleep(HISTORY_RETRY_DELAY)
-                    continue
-
-                decoded_text = raw_bytes.decode('utf-8')
-                history = json.loads(decoded_text)
-                
+                history = response.json()
                 if prompt_id in history:
                     logger.info(f"Successfully retrieved history for prompt {prompt_id} on attempt {attempt + 1}.")
                     return history[prompt_id]
                 else:
-                    logger.warning(f"History for prompt {prompt_id} not yet available in response (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
+                    logger.warning(f"History for prompt {prompt_id} not yet available (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
 
             except json.JSONDecodeError:
                 logger.warning(f"Received non-JSON response for history {prompt_id} (attempt {attempt + 1}/{HISTORY_MAX_RETRIES}). Retrying...")
-            except UnicodeDecodeError as e:
-                logger.error(f"UNICODE DECODE ERROR during get_history for prompt {prompt_id}. This is unusual and should be investigated.", exc_info=True)
-                # This error is less likely to be solved by a retry, but we'll allow it to retry anyway.
             except httpx.RequestError as e:
                 raise ComfyUIConnectionError(f"Could not connect to ComfyUI to get history: {e}") from e
             except httpx.HTTPStatusError as e:
@@ -172,16 +97,12 @@ class ComfyUIClient:
         raise WorkflowExecutionError(f"Failed to retrieve history for prompt_id {prompt_id} after {HISTORY_MAX_RETRIES} attempts.")
 
     async def get_queue_size(self) -> int:
-        """
-        Fetches the current queue size from the ComfyUI server.
-        The queue size is the sum of running and pending tasks.
-        """
+        """Fetches the current queue size (running + pending) from the ComfyUI server."""
         try:
             async with httpx.AsyncClient(timeout=self.http_timeout) as client:
                 response = await client.get(f"{self.base_api_url}/queue")
                 response.raise_for_status()
                 data = response.json()
-                # The queue size is the sum of items currently running and items pending.
                 size = len(data.get('queue_running', [])) + len(data.get('queue_pending', []))
                 logger.debug(f"Queue size for {self.base_api_url} is {size}")
                 return size
@@ -189,40 +110,45 @@ class ComfyUIClient:
             logger.warning(f"Could not get queue size for {self.base_api_url}: {e}")
             raise ComfyUIConnectionError(f"Could not get queue size from {self.base_api_url}") from e
 
-    async def generate_image(
-        self,
-        args: GenerateImageParams,
-        output_dir_path: str,
-        output_url_base: str,
-        workflow_filename: str | None = None
-    ) -> str:
-        prompt_id = None # Initialize prompt_id to None
+    async def upload_image_from_url(self, image_url: str) -> str:
+        """Downloads an image from a URL and uploads it to the ComfyUI server."""
         try:
-            logger.info(f"Generation request received. Prompt starts with: '{args.prompt[:80]}...'")
-            client_id = str(uuid.uuid4())
-            workflow = self._load_workflow(workflow_filename)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as response:
+                    response.raise_for_status()
+                    image_data = await response.read()
+                    content_type = response.headers.get('Content-Type', 'application/octet-stream')
 
-            # --- Inject Final Parameters into Workflow ---
-            positive_node = self._find_node_by_title(workflow, POSITIVE_PROMPT_TITLE)
-            if not positive_node:
-                raise WorkflowExecutionError(f"Node with title '{POSITIVE_PROMPT_TITLE}' not found in workflow.")
-            self._update_node_text_input(positive_node, POSITIVE_PROMPT_TITLE, args.prompt)
-            
-            negative_node = self._find_node_by_title(workflow, NEGATIVE_PROMPT_TITLE)
-            if negative_node:
-                self._update_node_text_input(negative_node, NEGATIVE_PROMPT_TITLE, args.negative_prompt)
-            
-            if args.aspect_ratio:
-                latent_node = self._find_node_by_title(workflow, LATENT_IMAGE_TITLE)
-                if latent_node:
-                    width, height = ASPECT_RATIOS.get(args.aspect_ratio, DEFAULT_ASPECT_RATIO)
-                    latent_node['inputs']['width'] = width
-                    latent_node['inputs']['height'] = height
-                    logger.info(f"Set aspect ratio to {args.aspect_ratio} ({width}x{height})")
-                else:
-                    logger.warning(f"Aspect ratio '{args.aspect_ratio}' provided, but node '{LATENT_IMAGE_TITLE}' not found.")
+                filename = Path(urlparse(image_url).path).name or "uploaded_image.bin"
+                form_data = aiohttp.FormData()
+                form_data.add_field('image', image_data, filename=filename, content_type=content_type)
+                
+                async with session.post(f"{self.base_api_url}/upload/image", data=form_data) as upload_response:
+                    upload_response.raise_for_status()
+                    response_json = await upload_response.json()
+                    if 'name' not in response_json:
+                        raise ComfyUIError(f"ComfyUI image upload response did not contain a 'name' field. Response: {response_json}")
+                    return response_json['name']
 
-            logger.info(f"Queueing prompt on ComfyUI server at {self.base_api_url}...")
+        except aiohttp.ClientError as e:
+            raise ComfyUIConnectionError(f"Failed to download or upload image from URL {image_url}: {e}") from e
+        except Exception as e:
+            raise ComfyUIError(f"An unexpected error occurred during image upload: {e}") from e
+
+    async def run_workflow_and_get_image(
+        self,
+        workflow: dict,
+        output_node_title: str,
+        output_dir_path: str,
+        output_url_base: str
+    ) -> str:
+        """
+        Queues a workflow, waits for completion, finds the output image from the
+        specified node, saves it, and returns its public URL.
+        """
+        client_id = str(uuid.uuid4())
+        prompt_id = None
+        try:
             queue_response = await self._queue_prompt(workflow, client_id)
             prompt_id = queue_response.get('prompt_id')
             if not prompt_id:
@@ -236,9 +162,6 @@ class ComfyUIClient:
                     async with websockets.connect(ws_url) as websocket:
                         while True:
                             message_data = await websocket.recv()
-                            
-                            # --- WEBSOCKET DECODING FIX ---
-                            # Explicitly decode the message as UTF-8 before parsing JSON.
                             if isinstance(message_data, bytes):
                                 message_str = message_data.decode('utf-8', errors='ignore')
                             else:
@@ -247,58 +170,50 @@ class ComfyUIClient:
                             try:
                                 message = json.loads(message_str)
                             except json.JSONDecodeError:
-                                logger.warning(f"Received a non-JSON WebSocket message, ignoring: {message_str[:200]}")
+                                logger.warning(f"Received non-JSON WebSocket message: {message_str[:200]}")
                                 continue
                             
                             if message['type'] == 'executing' and message['data']['node'] is None and message['data']['prompt_id'] == prompt_id:
                                 logger.info(f"Execution finished for prompt_id: {prompt_id}")
                                 break
             except TimeoutError as e:
-                logger.warning(f"Image generation timed out after {self.generation_timeout}s for prompt_id: {prompt_id}")
-                raise WorkflowExecutionError(f"Image generation timed out for prompt_id: {prompt_id}") from e
+                raise WorkflowExecutionError(f"Generation timed out after {self.generation_timeout}s for prompt_id: {prompt_id}") from e
             except (websockets.exceptions.WebSocketException, ConnectionRefusedError) as e:
                 raise ComfyUIConnectionError(f"Could not connect to ComfyUI WebSocket: {e}") from e
 
             history = await self._get_history(prompt_id)
-            outputs = history.get('outputs', {})
-            images_output = []
-            for node_output in outputs.values():
-                if 'images' in node_output:
-                    images_output.extend(node_output['images'])
             
-            if not images_output:
-                logger.error(f"No images found in history output for prompt_id: {prompt_id}. Full history: {history}")
-                raise WorkflowExecutionError(f"No images found in the output for prompt_id: {prompt_id}")
+            # Find the target output node by its title in the original workflow prompt
+            output_node_id = None
+            for node_id, node_data in workflow.items():
+                if node_data.get("_meta", {}).get("title") == output_node_title:
+                    output_node_id = node_id
+                    break
 
-            image_info = images_output[0]
-            filename = image_info.get('filename')
-            subfolder = image_info.get('subfolder', '')
-            image_type = image_info.get('type', 'output')
+            if not output_node_id:
+                raise WorkflowExecutionError(f"Node with title '{output_node_title}' not found in the executed workflow.")
+
+            outputs = history.get('outputs', {})
+            node_output = outputs.get(output_node_id)
+            if not node_output or 'images' not in node_output:
+                raise WorkflowExecutionError(f"No image output found for node ID {output_node_id} (title: {output_node_title}).")
+
+            image_info = node_output['images'][0]
+            filename, subfolder, image_type = image_info['filename'], image_info.get('subfolder', ''), image_info['type']
             
-            if not filename:
-                raise WorkflowExecutionError(f"History output for prompt_id {prompt_id} is missing a filename.")
-            
-            logger.info(f"Downloading generated image: {filename} (type: {image_type}, subfolder: '{subfolder}')")
+            logger.info(f"Downloading final image: {filename}")
             image_data = await self._get_image_data(filename, subfolder, image_type)
 
-            try:
-                # FIX: Generate a unique filename to prevent overwrites in multi-server setup
-                original_path = Path(filename)
-                unique_filename = f"{uuid.uuid4()}{original_path.suffix}"
-                output_path = Path(output_dir_path) / unique_filename
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(output_path, 'wb') as f:
-                    f.write(image_data)
-                logger.info(f"Image saved to: {output_path}")
-            except OSError as e:
-                raise ComfyUIError(f"Failed to save image to disk: {e}") from e
+            unique_filename = f"{uuid.uuid4()}{Path(filename).suffix}"
+            output_path = Path(output_dir_path) / unique_filename
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, 'wb') as f: f.write(image_data)
+            logger.info(f"Image saved to: {output_path}")
 
             final_url = f"{output_url_base.rstrip('/')}/{unique_filename}"
             logger.info(f"Returning public URL: {final_url}")
             return final_url
         
         except Exception as e:
-            logger.error(f"An unhandled exception occurred in generate_image for prompt_id {prompt_id} on server {self.base_api_url}", exc_info=True)
+            logger.error(f"Unhandled exception in run_workflow_and_get_image (prompt_id: {prompt_id})", exc_info=True)
             raise e
-        finally:
-            logger.info(f"generate_image function finished execution for prompt_id {prompt_id} (either success or failure).")

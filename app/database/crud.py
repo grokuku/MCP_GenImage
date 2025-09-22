@@ -1,6 +1,7 @@
-# from sqlalchemy import func
+# app/database/crud.py
 from sqlalchemy.orm import Session, joinedload
-from typing import Optional, List
+from sqlalchemy import func
+from typing import Optional, List, Literal
 
 from . import models
 from .. import schemas
@@ -20,35 +21,33 @@ def get_render_types(db: Session, visible_only: bool = False):
 
 
 def get_render_type_by_id(db: Session, render_type_id: int):
-    """
-    Retrieves a single render type by its ID.
-    """
+    """Retrieves a single render type by its ID."""
     return db.query(models.RenderType).filter(models.RenderType.id == render_type_id).first()
 
 
 def get_render_type_by_name(db: Session, name: str):
-    """
-    Retrieves a single render type by its unique name.
-    """
+    """Retrieves a single render type by its unique name."""
     return db.query(models.RenderType).filter(models.RenderType.name == name).first()
 
 
-def get_default_render_type(db: Session) -> Optional[models.RenderType]:
-    """
-    Retrieves the render type marked as default.
-    """
-    return db.query(models.RenderType).filter(models.RenderType.is_default == True).first()
+def get_default_render_type_for_generation(db: Session) -> Optional[models.RenderType]:
+    """Retrieves the default render type for the 'image_generation' mode."""
+    return db.query(models.RenderType).filter(models.RenderType.is_default_for_generation == True).first()
+
+
+def get_default_render_type_for_upscale(db: Session) -> Optional[models.RenderType]:
+    """Retrieves the default render type for the 'upscale' mode."""
+    return db.query(models.RenderType).filter(models.RenderType.is_default_for_upscale == True).first()
 
 
 def create_render_type(db: Session, render_type: schemas.RenderTypeCreate):
-    """
-    Creates a new render type in the database.
-    """
+    """Creates a new render type in the database."""
     db_render_type = models.RenderType(
         name=render_type.name,
         workflow_filename=render_type.workflow_filename,
         prompt_examples=render_type.prompt_examples,
-        is_visible=render_type.is_visible
+        is_visible=render_type.is_visible,
+        generation_mode=render_type.generation_mode
     )
     db.add(db_render_type)
     db.commit()
@@ -61,9 +60,7 @@ def update_render_type(
     render_type_id: int,
     render_type: schemas.RenderTypeCreate
 ):
-    """
-    Updates an existing render type.
-    """
+    """Updates an existing render type."""
     db_render_type = get_render_type_by_id(db, render_type_id)
     if not db_render_type:
         return None
@@ -72,41 +69,49 @@ def update_render_type(
     db_render_type.workflow_filename = render_type.workflow_filename
     db_render_type.prompt_examples = render_type.prompt_examples
     db_render_type.is_visible = render_type.is_visible
+    db_render_type.generation_mode = render_type.generation_mode
     
     db.commit()
     db.refresh(db_render_type)
     return db_render_type
 
 
-def set_default_render_type(db: Session, render_type_id: int) -> Optional[models.RenderType]:
+def set_default_render_type_for_mode(
+    db: Session,
+    render_type_id: int,
+    mode: Literal["generation", "upscale"]
+) -> Optional[models.RenderType]:
     """
-    Sets a specific render type as the default one.
-    Ensures any other render type is unset as default.
+    Sets a specific render type as the default for a given mode,
+    ensuring all others are unset for that mode.
     """
-    # First, find the render type to be set as default
     target_render_type = get_render_type_by_id(db, render_type_id)
     if not target_render_type:
         return None
 
-    # Second, find the current default render type, if any
-    current_default = get_default_render_type(db)
-    
-    # If there's a current default and it's not the target, unset it
-    if current_default and current_default.id != target_render_type.id:
-        current_default.is_default = False
-    
-    # Set the target as the new default
-    target_render_type.is_default = True
-    
+    if mode == "generation":
+        if target_render_type.generation_mode != "image_generation":
+            return None
+        current_default = get_default_render_type_for_generation(db)
+        if current_default:
+            current_default.is_default_for_generation = False
+        target_render_type.is_default_for_generation = True
+
+    elif mode == "upscale":
+        if target_render_type.generation_mode != "upscale":
+            return None
+        current_default = get_default_render_type_for_upscale(db)
+        if current_default:
+            current_default.is_default_for_upscale = False
+        target_render_type.is_default_for_upscale = True
+
     db.commit()
     db.refresh(target_render_type)
     return target_render_type
 
 
 def delete_render_type(db: Session, render_type_id: int):
-    """
-    Deletes a render type from the database by its ID.
-    """
+    """Deletes a render type from the database by its ID."""
     db_render_type = db.query(models.RenderType).filter(models.RenderType.id == render_type_id).first()
     if db_render_type:
         db.delete(db_render_type)
@@ -151,20 +156,15 @@ def get_style_by_id(db: Session, style_id: int):
 
 
 def get_default_styles(db: Session) -> List[models.Style]:
-    """
-    Retrieves all styles marked as default.
-    """
+    """Retrieves all styles marked as default."""
     return db.query(models.Style).filter(models.Style.is_default == True).all()
 
 
 def toggle_style_default_status(db: Session, style_id: int) -> Optional[models.Style]:
-    """
-    Toggles the is_default status of a specific style.
-    """
+    """Toggles the is_default status of a specific style."""
     db_style = get_style_by_id(db, style_id)
     if not db_style:
         return None
-    
     db_style.is_default = not db_style.is_default
     db.commit()
     db.refresh(db_style)
@@ -172,10 +172,7 @@ def toggle_style_default_status(db: Session, style_id: int) -> Optional[models.S
 
 
 def create_style(db: Session, style: schemas.StyleCreate):
-    """
-    Creates a new style in the database and links it to its
-    compatible and default render types.
-    """
+    """Creates a new style in the database."""
     compatible_types = []
     if style.compatible_render_type_ids:
         compatible_types = db.query(models.RenderType).filter(
@@ -183,8 +180,7 @@ def create_style(db: Session, style: schemas.StyleCreate):
         ).all()
 
     db_style = models.Style(
-        name=style.name,
-        category=style.category,
+        name=style.name, category=style.category,
         prompt_template=style.prompt_template,
         negative_prompt_template=style.negative_prompt_template,
         default_render_type_id=style.default_render_type_id,
@@ -201,22 +197,17 @@ def update_style(
     style_id: int,
     style: schemas.StyleCreate
 ):
-    """
-    Updates an existing style, including its relationships
-    to render types.
-    """
+    """Updates an existing style."""
     db_style = get_style_by_id(db, style_id)
     if not db_style:
         return None
 
-    # Update scalar fields
     db_style.name = style.name
     db_style.category = style.category
     db_style.prompt_template = style.prompt_template
     db_style.negative_prompt_template = style.negative_prompt_template
     db_style.default_render_type_id = style.default_render_type_id
 
-    # Update many-to-many relationship
     compatible_types = []
     if style.compatible_render_type_ids:
         compatible_types = db.query(models.RenderType).filter(
@@ -230,9 +221,7 @@ def update_style(
 
 
 def delete_style(db: Session, style_id: int):
-    """
-    Deletes a style from the database by its ID.
-    """
+    """Deletes a style from the database by its ID."""
     db_style = db.query(models.Style).filter(models.Style.id == style_id).first()
     if db_style:
         db.delete(db_style)
@@ -244,17 +233,13 @@ def delete_style(db: Session, style_id: int):
 # --- Settings CRUD Operations ---
 
 def get_all_settings(db: Session) -> dict[str, str]:
-    """
-    Retrieves all settings and returns them as a dictionary.
-    """
+    """Retrieves all settings and returns them as a dictionary."""
     settings = db.query(models.Setting).all()
     return {setting.key: setting.value for setting in settings}
 
 
 def update_settings(db: Session, settings_data: dict[str, str]):
-    """
-    Updates multiple settings in the database (upsert).
-    """
+    """Updates multiple settings in the database (upsert)."""
     for key, value in settings_data.items():
         db_setting = db.query(models.Setting).filter(models.Setting.key == key).first()
         if db_setting:
@@ -268,38 +253,21 @@ def update_settings(db: Session, settings_data: dict[str, str]):
 # --- ComfyUI Instance CRUD Operations ---
 
 def get_comfyui_instances(db: Session):
-    """
-    Retrieves all ComfyUI instances from the database, eager loading
-    their compatible render types.
-    """
+    """Retrieves all ComfyUI instances from the database."""
     return db.query(models.ComfyUIInstance).options(
         joinedload(models.ComfyUIInstance.compatible_render_types)
     ).order_by(models.ComfyUIInstance.name).all()
 
 
 def get_comfyui_instance_by_id(db: Session, instance_id: int):
-    """
-    Retrieves a single ComfyUI instance by its ID, eager loading
-    its compatible render types.
-    """
+    """Retrieves a single ComfyUI instance by its ID."""
     return db.query(models.ComfyUIInstance).options(
         joinedload(models.ComfyUIInstance.compatible_render_types)
     ).filter(models.ComfyUIInstance.id == instance_id).first()
 
 
-def get_one_active_comfyui_instance(db: Session) -> Optional[models.ComfyUIInstance]:
-    """
-    Retrieves the first active ComfyUI instance found.
-    Maintained for compatibility, but get_all_active_comfyui_instances is preferred.
-    """
-    return db.query(models.ComfyUIInstance).filter(models.ComfyUIInstance.is_active == True).first()
-
-
 def get_all_active_comfyui_instances(db: Session) -> List[models.ComfyUIInstance]:
-    """
-    Retrieves all active ComfyUI instances for load balancing.
-    Eager loads compatible render types.
-    """
+    """Retrieves all active ComfyUI instances for load balancing."""
     return db.query(models.ComfyUIInstance).options(
         joinedload(models.ComfyUIInstance.compatible_render_types)
     ).filter(models.ComfyUIInstance.is_active == True).all()
@@ -309,9 +277,7 @@ def create_comfyui_instance(
     db: Session,
     comfyui_instance: schemas.ComfyUIInstanceCreate
 ):
-    """
-    Creates a new ComfyUI instance and links it to compatible render types.
-    """
+    """Creates a new ComfyUI instance."""
     exists = db.query(models.ComfyUIInstance).filter(
         (models.ComfyUIInstance.name == comfyui_instance.name) | (models.ComfyUIInstance.base_url == comfyui_instance.base_url)
     ).first()
@@ -340,9 +306,7 @@ def update_comfyui_instance(
     instance_id: int,
     comfyui_instance: schemas.ComfyUIInstanceCreate
 ):
-    """
-    Updates an existing ComfyUI instance, including its compatible render types.
-    """
+    """Updates an existing ComfyUI instance."""
     db_instance = get_comfyui_instance_by_id(db, instance_id)
     if not db_instance:
         return None
@@ -363,9 +327,7 @@ def update_comfyui_instance(
 
 
 def toggle_comfyui_instance_active_status(db: Session, instance_id: int) -> Optional[models.ComfyUIInstance]:
-    """
-    Toggles the is_active status of a specific ComfyUI instance.
-    """
+    """Toggles the is_active status of a specific ComfyUI instance."""
     db_instance = get_comfyui_instance_by_id(db, instance_id)
     if not db_instance:
         return None
@@ -377,9 +339,7 @@ def toggle_comfyui_instance_active_status(db: Session, instance_id: int) -> Opti
 
 
 def delete_comfyui_instance(db: Session, instance_id: int):
-    """
-    Deletes a ComfyUI instance from the database by its ID.
-    """
+    """Deletes a ComfyUI instance from the database by its ID."""
     db_instance = db.query(models.ComfyUIInstance).filter(models.ComfyUIInstance.id == instance_id).first()
     if db_instance:
         db.delete(db_instance)
@@ -391,9 +351,7 @@ def delete_comfyui_instance(db: Session, instance_id: int):
 # --- GenerationLog CRUD Operations ---
 
 def create_generation_log(db: Session, log: schemas.GenerationLogCreate) -> models.GenerationLog:
-    """
-    Creates a new generation log entry in the database.
-    """
+    """Creates a new generation log entry in the database."""
     db_log = models.GenerationLog(**log.model_dump())
     db.add(db_log)
     db.commit()
@@ -402,9 +360,7 @@ def create_generation_log(db: Session, log: schemas.GenerationLogCreate) -> mode
 
 
 def get_generation_logs(db: Session, skip: int = 0, limit: int = 100) -> List[models.GenerationLog]:
-    """
-    Retrieves a list of generation logs, most recent first.
-    """
+    """Retrieves a list of generation logs, most recent first."""
     return db.query(models.GenerationLog).order_by(
         models.GenerationLog.timestamp.desc()
     ).offset(skip).limit(limit).all()
@@ -413,28 +369,20 @@ def get_generation_logs(db: Session, skip: int = 0, limit: int = 100) -> List[mo
 # --- Statistics Functions ---
 
 def get_total_successful_generations_count(db: Session) -> int:
-    """
-    Counts the total number of successful generations.
-    """
+    """Counts the total number of successful generations."""
     return db.query(models.GenerationLog).filter(models.GenerationLog.status == 'SUCCESS').count()
 
 
 def get_prompt_enhancement_count(db: Session) -> int:
-    """
-    Counts how many times the LLM prompt enhancement was used successfully.
-    """
+    """Counts how many times the LLM prompt enhancement was used successfully."""
     return db.query(models.GenerationLog).filter(
         models.GenerationLog.status == 'SUCCESS',
         models.GenerationLog.llm_enhanced == True
     ).count()
 
 
-from sqlalchemy import func
-
 def get_usage_count_by_render_type(db: Session) -> List[tuple[str, int]]:
-    """
-    Gets the count of successful generations grouped by render_type_name.
-    """
+    """Gets the count of successful generations grouped by render_type_name."""
     return db.query(
         models.GenerationLog.render_type_name,
         func.count(models.GenerationLog.id)
@@ -448,10 +396,7 @@ def get_usage_count_by_render_type(db: Session) -> List[tuple[str, int]]:
 
 
 def get_all_style_names_from_logs(db: Session) -> List[str]:
-    """
-    Retrieves all 'style_names' strings from successful generation logs.
-    The counting and splitting will be handled in the calling function.
-    """
+    """Retrieves all 'style_names' strings from successful generation logs."""
     results = db.query(models.GenerationLog.style_names).filter(
         models.GenerationLog.status == 'SUCCESS',
         models.GenerationLog.style_names.isnot(None),

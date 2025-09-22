@@ -15,8 +15,19 @@
             <div class="form-group">
                 <label for="output_url_base">Output URL Base</label>
                 <input type="text" id="output_url_base" name="output_url_base" value="{{ settings.output_url_base }}"
-                    placeholder="e.g., http://localhost:8000/outputs">
+                    placeholder="e.g., http://localhost:8001/outputs">
                 <small>The public base URL where generated images can be accessed. This is returned by the API.</small>
+            </div>
+
+            <h2 style="border-bottom: 1px solid #444; padding-bottom: 0.3em; margin-top: 2em; margin-bottom: 1em;">
+                Upscale Settings</h2>
+
+            <div class="form-group">
+                <label for="default_upscale_denoise">Default Upscale Denoise</label>
+                <input type="number" id="default_upscale_denoise" name="default_upscale_denoise"
+                    value="{{ settings.default_upscale_denoise }}" placeholder="e.g., 0.2" step="0.01" min="0" max="1">
+                <small>The default denoise value to use for the 'upscale_image' tool if not specified in the API
+                    call.</small>
             </div>
 
             <h2 style="border-bottom: 1px solid #444; padding-bottom: 0.3em; margin-top: 2em; margin-bottom: 1em;">
@@ -67,15 +78,12 @@
         const modelSelect = document.getElementById('ollama_model_name');
         const loader = document.getElementById('models-loader');
         const errorDisplay = document.getElementById('models-error');
-
-        // Store the model name that was loaded from the database
         const currentlySavedModel = "{{ settings.ollama_model_name }}";
-
         let debounceTimer;
 
         async function fetchAndPopulateModels() {
             const apiUrl = apiUrlInput.value.trim();
-            modelSelect.innerHTML = ''; // Clear previous options
+            modelSelect.innerHTML = '';
             loader.style.display = 'block';
             errorDisplay.style.display = 'none';
 
@@ -90,12 +98,10 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ollama_api_url: apiUrl })
                 });
-
                 if (!response.ok) {
                     const err = await response.json();
                     throw new Error(err.detail || 'Failed to fetch models.');
                 }
-
                 const data = await response.json();
 
                 if (data.models && data.models.length > 0) {
@@ -103,9 +109,7 @@
                         const option = document.createElement('option');
                         option.value = model.name;
                         option.textContent = model.name;
-                        if (model.name === currentlySavedModel) {
-                            option.selected = true;
-                        }
+                        if (model.name === currentlySavedModel) option.selected = true;
                         modelSelect.appendChild(option);
                     });
                 } else {
@@ -114,7 +118,6 @@
                     option.disabled = true;
                     modelSelect.appendChild(option);
                 }
-
             } catch (error) {
                 errorDisplay.textContent = 'Error: ' + error.message;
                 errorDisplay.style.display = 'block';
@@ -123,13 +126,11 @@
             }
         }
 
-        // Use a debounce to avoid spamming the API while typing
         apiUrlInput.addEventListener('input', () => {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(fetchAndPopulateModels, 500);
         });
 
-        // Initial load on page start
         fetchAndPopulateModels();
     });
 </script>

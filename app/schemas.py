@@ -1,13 +1,11 @@
-#### Fichier : app/schemas.py
-from pydantic import BaseModel, Field, field_validator
-from typing import Any, List, Optional, TypeVar, Generic, Union
+# app/schemas.py
+from pydantic import BaseModel, Field
+from typing import Any, List, Optional, TypeVar, Generic, Union, Literal
 from datetime import datetime
 
 # --- JSON-RPC Generic Models ---
 
-# The request/response ID can be a string, integer, or null.
 JsonRpcId = Union[str, int, None]
-
 T = TypeVar('T')
 
 class JsonRpcError(BaseModel):
@@ -21,75 +19,79 @@ class JsonRpcRequest(BaseModel):
     params: Optional[Any] = None
     id: JsonRpcId = None
 
-    @field_validator('jsonrpc')
-    @classmethod
-    def must_be_2_0(cls, v: str) -> str:
-        if v != '2.0':
-            raise ValueError('jsonrpc version must be "2.0"')
-        return v
-
 class JsonRpcResponse(BaseModel, Generic[T]):
     jsonrpc: str = "2.0"
     result: Optional[T] = None
     error: Optional[JsonRpcError] = None
     id: JsonRpcId
 
-# --- MCP Tool-Specific Models ---
+# --- MCP Tool-Specific Parameter Schemas ---
 
 class GenerateImageParams(BaseModel):
-    """
-    Defines the parameters for the 'generate_image' tool call, aligned with
-    the logic we have defined.
-    """
+    """Defines the parameters for the 'generate_image' tool."""
     prompt: str
-    negative_prompt: str = ""
-    style_names: List[str] = Field(default_factory=list, examples=[["Cinematic", "Photorealistic"]])
-    aspect_ratio: Optional[str] = Field(None, examples=["16:9", "1:1"])
-    render_type: Optional[str] = Field(None, examples=["SDXL_TURBO", "UPSCALE_4X"])
-    enhance_prompt: bool = True
+    negative_prompt: Optional[str] = ""
+    style_names: Optional[List[str]] = Field(default_factory=list)
+    aspect_ratio: Optional[str] = None
+    render_type: Optional[str] = None
+    seed: Optional[int] = None
+    enhance_prompt: Optional[bool] = True
 
-# Note: This is a generic wrapper for any tool. We will use GenerateImageParams
-# as the specific model for our 'generate_image' method.
+class UpscaleImageParams(BaseModel):
+    """Defines the parameters for the 'upscale_image' tool."""
+    input_image_url: str
+    prompt: Optional[str] = None
+    render_type: Optional[str] = None
+    denoise: Optional[float] = Field(None, ge=0.0, le=1.0)
+    seed: Optional[int] = None
+
 class ToolCallParams(BaseModel):
+    """
+    Generic wrapper for any tool call. The arguments are a dict
+    and will be validated against the specific tool's schema in the endpoint.
+    """
     name: str
-    arguments: GenerateImageParams
+    arguments: dict
 
-# --- Tool Definition (as a dictionary for simplicity) ---
 
-GENERATE_IMAGE_TOOL_DEF = {
+# --- Base Schemas for Tool Definitions ---
+
+GENERATE_IMAGE_TOOL_SCHEMA = {
     "name": "generate_image",
     "title": "Generate Image from Text",
-    "description": "Generates an image based on a textual description (prompt). Can be used to create illustrations, photos, or artistic representations.",
+    "description": "Generates a new image based on a textual description (prompt).",
     "inputSchema": {
         "type": "object",
         "properties": {
             "prompt": {
                 "type": "string",
-                "description": "A detailed description of the image to be generated. Be as specific as possible about the subject, style, colors, and composition."
+                "description": "A detailed description of the image to generate."
             },
             "negative_prompt": {
                 "type": "string",
-                "description": "Optional. A description of elements to avoid in the image (e.g., 'ugly, deformed, extra fingers')."
+                "description": "Optional. A description of elements to avoid in the image."
             },
             "style_names": {
                 "type": "array",
-                "description": "Optional. A list of style names to apply to the prompt (e.g., ['Cinematic', 'Photorealistic']). Styles are configured in the web UI.",
-                "items": {
-                    "type": "string"
-                }
+                "description": "Optional. A list of style names to apply.",
+                "items": { "type": "string" }
             },
             "aspect_ratio": {
                 "type": "string",
-                "description": "Optional. The desired aspect ratio of the final image. Defaults to '1:1' (square).",
+                "description": "Optional. The desired aspect ratio of the final image.",
                 "enum": ["1:1", "16:9", "9:16", "4:3", "3:4"]
             },
             "render_type": {
                 "type": "string",
-                "description": "Optional. The specific rendering workflow to use (e.g., for upscaling, video, or a specific model). Overrides the default workflow."
+                "description": "Optional. The specific rendering workflow to use."
+            },
+            "seed": {
+                "type": "integer",
+                "description": "Optional. A specific seed for reproducing an image."
             },
             "enhance_prompt": {
                 "type": "boolean",
-                "description": "Optional. If true, an LLM will be used to enhance and refine the final prompts before generation. Defaults to true.",
+                "description": "Optional. If true, an LLM will enhance the prompt. Defaults to true.",
                 "default": True
             }
         },
@@ -97,21 +99,55 @@ GENERATE_IMAGE_TOOL_DEF = {
     }
 }
 
+UPSCALE_IMAGE_TOOL_SCHEMA = {
+    "name": "upscale_image",
+    "title": "Upscale an Image",
+    "description": "Increases the resolution and enhances the detail of an existing image.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "input_image_url": {
+                "type": "string",
+                "description": "The URL of the source image to upscale."
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Optional. A textual description to guide the upscaling process."
+            },
+            "render_type": {
+                "type": "string",
+                "description": "Optional. The specific upscaling workflow to use."
+            },
+            "denoise": {
+                "type": "number",
+                "description": "Optional. Denoising factor (0.0 to 1.0). Higher values allow for more creative changes."
+            },
+            "seed": {
+                "type": "integer",
+                "description": "Optional. A specific seed for reproducing the upscale."
+            }
+        },
+        "required": ["input_image_url"]
+    }
+}
+
+
 # --- Database ORM Schemas ---
 
-# --- RenderType Schemas ---
 class RenderTypeBase(BaseModel):
     name: str
     workflow_filename: str
     prompt_examples: Optional[str] = None
     is_visible: bool = True
+    generation_mode: Literal["image_generation", "upscale"] = "image_generation"
 
 class RenderTypeCreate(RenderTypeBase):
     pass
 
 class RenderType(RenderTypeBase):
     id: int
-    is_default: bool
+    is_default_for_generation: bool
+    is_default_for_upscale: bool
 
     class Config:
         from_attributes = True
@@ -161,7 +197,7 @@ class GenerationLogBase(BaseModel):
     render_type_name: Optional[str] = None
     style_names: Optional[str] = None
     aspect_ratio: Optional[str] = None
-    seed: Optional[str] = None
+    seed: Optional[int] = None
     llm_enhanced: bool = False
     status: str
     image_filename: Optional[str] = None

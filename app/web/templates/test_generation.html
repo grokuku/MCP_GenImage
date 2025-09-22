@@ -2,95 +2,95 @@
 
 {% block title %}{{ title }} - MCP GenImage{% endblock %}
 
+{% block head %}
+{{ super() }}
+<style>
+    .tab-container {
+        display: flex;
+        border-bottom: 1px solid #444;
+        margin-bottom: 1.5em;
+    }
+    .tab {
+        padding: 0.8em 1.2em;
+        cursor: pointer;
+        border: 1px solid transparent;
+        border-bottom: none;
+        margin-bottom: -1px;
+        background-color: #2a2a2a;
+    }
+    .tab.active {
+        background-color: #3c3c3c;
+        border-color: #444;
+        border-bottom: 1px solid #3c3c3c;
+        border-radius: 4px 4px 0 0;
+        font-weight: bold;
+    }
+    .tab-content {
+        display: none;
+    }
+    .tab-content.active {
+        display: block;
+    }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container">
     <h1>{{ title }}</h1>
-    <p>Use this form to test the full image generation pipeline, from prompt processing to the final image.</p>
+    <p>Use this interface to test the available MCP tools.</p>
 
-    <form id="generation-form" onsubmit="return false;">
-        <div class="form-group">
-            <label for="prompt">Positive Prompt</label>
-            <textarea id="prompt" name="prompt" rows="4" required
-                placeholder="e.g., a majestic cat sitting on a throne, fantasy art">A cute robot reading a book in a cozy library</textarea>
-        </div>
+    <div class="tab-container">
+        <div class="tab active" data-tab="generate">Generate Image</div>
+        <div class="tab" data-tab="upscale">Upscale Image</div>
+    </div>
 
-        <div class="form-group">
-            <label for="negative_prompt">Negative Prompt</label>
-            <textarea id="negative_prompt" name="negative_prompt" rows="2"
-                placeholder="e.g., blurry, ugly, watermark"></textarea>
-        </div>
-
-        <div class="form-group">
-            <label for="style_names">Styles (Ctrl+Click to select multiple)</label>
-            <select id="style_names" name="style_names" multiple size="6">
-                {% for group in styles|groupby('category') %}
-                <optgroup label="{{ group.grouper }}">
-                    {% for style in group.list %}
-                    <option value="{{ style.name }}">{{ style.name }}</option>
-                    {% endfor %}
-                </optgroup>
-                {% endfor %}
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="render_type">Render Type</label>
-            <select id="render_type" name="render_type">
-                <option value="">(Default Workflow)</option>
-                {% for rt in render_types %}
-                <option value="{{ rt.name }}">{{ rt.name }}</option>
-                {% endfor %}
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="aspect_ratio">Aspect Ratio</label>
-            <select id="aspect_ratio" name="aspect_ratio">
+    <!-- Generate Image Tab Content -->
+    <div id="tab-generate" class="tab-content active">
+        <form id="gen-form">
+            <div class="form-group"><label for="gen-prompt">Positive Prompt</label><textarea id="gen-prompt" rows="4" required placeholder="e.g., a majestic cat sitting on a throne, fantasy art">A cute robot reading a book in a cozy library</textarea></div>
+            <div class="form-group"><label for="gen-negative-prompt">Negative Prompt</label><textarea id="gen-negative-prompt" rows="2" placeholder="e.g., blurry, ugly, watermark"></textarea></div>
+            <div class="form-group"><label for="gen-style-names">Styles (Ctrl+Click to select multiple)</label><select id="gen-style-names" multiple size="6">
+                {% for group in styles|groupby('category') %}<optgroup label="{{ group.grouper }}">
+                    {% for style in group.list %}<option value="{{ style.name }}">{{ style.name }}</option>{% endfor %}
+                </optgroup>{% endfor %}
+            </select></div>
+            <div class="form-group"><label for="gen-render-type">Render Type</label><select id="gen-render-type">
+                <option value="">(Default for Generation)</option>
+                {% for rt in render_types_gen %}<option value="{{ rt.name }}">{{ rt.name }}</option>{% endfor %}
+            </select></div>
+            <div class="form-group"><label for="gen-aspect-ratio">Aspect Ratio</label><select id="gen-aspect-ratio">
                 <option value="1:1" selected>1:1 (Square)</option>
                 <option value="16:9">16:9 (Widescreen)</option>
                 <option value="9:16">9:16 (Portrait)</option>
-                <option value="4:3">4:3 (Landscape)</option>
-                <option value="3:4">3:4 (Portrait)</option>
-                <option value="3:2">3:2 (Photo)</option>
-                <option value="2:3">2:3 (Photo)</option>
-            </select>
-        </div>
-
-        <div class="form-group">
-            <label for="enhance_prompt" style="display: inline-block; margin-right: 10px;">
-                Enhance with LLM
-            </label>
-            <input type="checkbox" id="enhance_prompt" name="enhance_prompt" checked>
-        </div>
-
-    </form>
-
-    <div style="margin-top: 1.5em;">
-        <button id="process-btn" class="btn btn-secondary">Process Prompts Only</button>
-        <button id="generate-btn" class="btn btn-primary">Generate Full Image</button>
+            </select></div>
+            <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="gen-enhance-prompt" checked> Enhance with LLM</label></div>
+            <div class="form-group"><label for="gen-seed">Seed (Optional)</label><input type="number" id="gen-seed" placeholder="Leave blank for random"></div>
+            <button type="button" id="gen-btn" class="btn btn-primary">Generate Image</button>
+        </form>
     </div>
 
-    <div id="result-container" style="display: none; margin-top: 1.5em;">
-        <div id="loading-indicator" style="display: none;">Processing...</div>
+    <!-- Upscale Image Tab Content -->
+    <div id="tab-upscale" class="tab-content">
+        <form id="upscale-form">
+            <div class="form-group"><label for="upscale-input-url">Input Image URL</label><input type="url" id="upscale-input-url" required placeholder="https://example.com/image.png"></div>
+            <div class="form-group"><label for="upscale-render-type">Upscale Render Type</label><select id="upscale-render-type">
+                <option value="">(Default for Upscale)</option>
+                {% for rt in render_types_upscale %}<option value="{{ rt.name }}">{{ rt.name }}</option>{% endfor %}
+            </select></div>
+            <div class="form-group"><label for="upscale-prompt">Guiding Prompt (Optional)</label><textarea id="upscale-prompt" rows="2" placeholder="e.g., highly detailed, 4k, photorealistic"></textarea></div>
+            <div class="form-group"><label for="upscale-denoise">Denoise (Optional)</label><input type="number" id="upscale-denoise" step="0.01" min="0" max="1" placeholder="e.g., 0.2 (leave blank for default)"></div>
+            <div class="form-group"><label for="upscale-seed">Seed (Optional)</label><input type="number" id="upscale-seed" placeholder="Leave blank for random"></div>
+            <button type="button" id="upscale-btn" class="btn btn-primary">Upscale Image</button>
+        </form>
+    </div>
+
+    <!-- Shared Result Display -->
+    <div id="result-container" style="display: none; margin-top: 2em;">
+        <div id="loading-indicator" style="display: none;"><h2>Processing...</h2></div>
         <div id="error-display" class="result-box" style="display: none; background-color: #5c2c2c;"></div>
-
-        <div id="prompt-results" style="display: none;">
-            <h2>Final Prompts</h2>
-            <div class="form-group">
-                <label>Positive Prompt:</label>
-                <div id="final-prompt-output" class="result-box"></div>
-            </div>
-            <div class="form-group">
-                <label>Negative Prompt:</label>
-                <div id="final-negative-prompt-output" class="result-box"></div>
-            </div>
-        </div>
-
         <div id="image-result" style="display: none;">
-            <h2>Generated Image</h2>
-            <div class="result-box">
-                <img id="result-image" src="" alt="Generated Image">
-            </div>
+            <h2>Result</h2>
+            <div class="result-box"><img id="result-image" src="" alt="Generated Image" style="max-width: 100%; height: auto;"></div>
         </div>
     </div>
 </div>
@@ -98,130 +98,140 @@
 
 {% block scripts %}
 <script>
-    document.addEventListener('DOMContentLoaded', () => {
-        const processBtn = document.getElementById('process-btn');
-        const generateBtn = document.getElementById('generate-btn');
-
-        const resultContainer = document.getElementById('result-container');
-        const loadingIndicator = document.getElementById('loading-indicator');
-        const errorDisplay = document.getElementById('error-display');
-        const promptResults = document.getElementById('prompt-results');
-        const imageResult = document.getElementById('image-result');
-
-        const finalPromptOutput = document.getElementById('final-prompt-output');
-        const finalNegativePromptOutput = document.getElementById('final-negative-prompt-output');
-        const resultImage = document.getElementById('result-image');
-
-        function getFormData() {
-            const selectedStyles = Array.from(document.getElementById('style_names').selectedOptions).map(opt => opt.value);
-            const renderType = document.getElementById('render_type').value;
-            const aspectRatio = document.getElementById('aspect_ratio').value;
-
-            const data = {
-                prompt: document.getElementById('prompt').value,
-                negative_prompt: document.getElementById('negative_prompt').value,
-                style_names: selectedStyles,
-                enhance_prompt: document.getElementById('enhance_prompt').checked,
-                // Only include these if they have a value, to allow for API defaults
-                ...(renderType && { render_type: renderType }),
-                ...(aspectRatio && { aspect_ratio: aspectRatio }),
-            };
-            return data;
-        }
-
-        function setLoadingState(isLoading) {
-            loadingIndicator.style.display = isLoading ? 'block' : 'none';
-            processBtn.disabled = isLoading;
-            generateBtn.disabled = isLoading;
-        }
-
-        function resetResultDisplays() {
-            resultContainer.style.display = 'block';
-            errorDisplay.style.display = 'none';
-            promptResults.style.display = 'none';
-            imageResult.style.display = 'none';
-            resultImage.src = '';
-        }
-
-        async function handleProcessPrompts() {
-            resetResultDisplays();
-            setLoadingState(true);
-
-            try {
-                const response = await fetch('/api/v1/process-prompts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(getFormData())
-                });
-
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Failed to process prompts.');
-                }
-
-                const data = await response.json();
-                finalPromptOutput.textContent = data.final_prompt;
-                finalNegativePromptOutput.textContent = data.final_negative_prompt;
-                promptResults.style.display = 'block';
-
-            } catch (error) {
-                errorDisplay.textContent = 'Error: ' + error.message;
-                errorDisplay.style.display = 'block';
-            } finally {
-                setLoadingState(false);
-            }
-        }
-
-        async function handleGenerateImage() {
-            resetResultDisplays();
-            setLoadingState(true);
-
-            const mcpRequest = {
-                jsonrpc: "2.0",
-                method: "tools/call",
-                params: {
-                    name: "generate_image",
-                    arguments: getFormData()
-                },
-                id: "test-gen-" + Date.now()
-            };
-
-            try {
-                const response = await fetch('/mcp', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(mcpRequest)
-                });
-
-                const data = await response.json();
-
-                if (data.error) {
-                    throw new Error(`[${data.error.code}] ${data.error.message}`);
-                }
-
-                const result = data.result;
-                if (result && Array.isArray(result.content) && result.content.length > 0) {
-                    const toolOutput = result.content[0];
-                    if (toolOutput.type === 'image' && toolOutput.source) {
-                        resultImage.src = toolOutput.source;
-                        imageResult.style.display = 'block';
-                    } else {
-                        throw new Error('Server returned a valid but unexpected content type. Expected an image.');
-                    }
-                } else {
-                    throw new Error('Invalid response format from server.');
-                }
-
-            } catch (error) {
-                errorDisplay.textContent = 'Error: ' + error.message;
-                errorDisplay.style.display = 'block';
-            } finally {
-                setLoadingState(false);
-            }
-        }
-
-        processBtn.addEventListener('click', handleProcessPrompts);
-        generateBtn.addEventListener('click', handleGenerateImage);
+document.addEventListener('DOMContentLoaded', () => {
+    // --- Tab Management ---
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            tabs.forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            tabContents.forEach(c => c.classList.remove('active'));
+            document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+        });
     });
+
+    // --- Shared Result Display Elements ---
+    const resultContainer = document.getElementById('result-container');
+    const loadingIndicator = document.getElementById('loading-indicator');
+    const errorDisplay = document.getElementById('error-display');
+    const imageResult = document.getElementById('image-result');
+    const resultImage = document.getElementById('result-image');
+
+    // --- Form Buttons ---
+    const generateBtn = document.getElementById('gen-btn');
+    const upscaleBtn = document.getElementById('upscale-btn');
+
+    // --- Helper Functions ---
+    function setLoadingState(isLoading) {
+        loadingIndicator.style.display = isLoading ? 'block' : 'none';
+        generateBtn.disabled = isLoading;
+        upscaleBtn.disabled = isLoading;
+    }
+
+    function resetResultDisplays() {
+        resultContainer.style.display = 'block';
+        errorDisplay.style.display = 'none';
+        imageResult.style.display = 'none';
+        resultImage.src = '';
+    }
+
+    async function sendMcpRequest(payload) {
+        resetResultDisplays();
+        setLoadingState(true);
+        try {
+            const response = await fetch('/mcp', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+
+            if (data.error) {
+                throw new Error(`[${data.error.code}] ${data.error.message}`);
+            }
+
+            if (data.method === 'stream/start' && data.params.ws_url) {
+                await handleWebSocket(data.params.ws_url);
+            } else {
+                throw new Error('Server did not respond with a stream/start message.');
+            }
+
+        } catch (error) {
+            errorDisplay.textContent = 'Error: ' + error.message;
+            errorDisplay.style.display = 'block';
+            setLoadingState(false);
+        }
+    }
+
+    function handleWebSocket(wsUrl) {
+        return new Promise((resolve, reject) => {
+            const ws = new WebSocket(wsUrl);
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.method === 'stream/chunk') {
+                    if (msg.params.result) {
+                        const content = msg.params.result.content[0];
+                        if (content.type === 'image' && content.source) {
+                            resultImage.src = content.source;
+                            imageResult.style.display = 'block';
+                        }
+                    } else if (msg.params.error) {
+                        throw new Error(`[${msg.params.error.code}] ${msg.params.error.message}`);
+                    }
+                } else if (msg.method === 'stream/end') {
+                    ws.close();
+                }
+            };
+            ws.onclose = () => {
+                setLoadingState(false);
+                resolve();
+            };
+            ws.onerror = (event) => {
+                const error = new Error('WebSocket connection failed.');
+                errorDisplay.textContent = 'Error: ' + error.message;
+                errorDisplay.style.display = 'block';
+                setLoadingState(false);
+                reject(error);
+            };
+        });
+    }
+
+    // --- Event Handlers ---
+    generateBtn.addEventListener('click', () => {
+        const selectedStyles = Array.from(document.getElementById('gen-style-names').selectedOptions).map(o => o.value);
+        const args = {
+            prompt: document.getElementById('gen-prompt').value,
+            negative_prompt: document.getElementById('gen-negative-prompt').value,
+            style_names: selectedStyles,
+            aspect_ratio: document.getElementById('gen-aspect-ratio').value,
+            enhance_prompt: document.getElementById('gen-enhance-prompt').checked,
+            render_type: document.getElementById('gen-render-type').value || null,
+            seed: parseInt(document.getElementById('gen-seed').value) || null,
+        };
+        const payload = {
+            jsonrpc: "2.0", method: "tools/call",
+            params: { name: "generate_image", arguments: args },
+            id: "test-gen-" + Date.now()
+        };
+        sendMcpRequest(payload);
+    });
+
+    upscaleBtn.addEventListener('click', () => {
+        const args = {
+            input_image_url: document.getElementById('upscale-input-url').value,
+            prompt: document.getElementById('upscale-prompt').value || null,
+            denoise: parseFloat(document.getElementById('upscale-denoise').value) || null,
+            render_type: document.getElementById('upscale-render-type').value || null,
+            seed: parseInt(document.getElementById('upscale-seed').value) || null,
+        };
+        const payload = {
+            jsonrpc: "2.0", method: "tools/call",
+            params: { name: "upscale_image", arguments: args },
+            id: "test-upscale-" + Date.now()
+        };
+        sendMcpRequest(payload);
+    });
+});
 </script>
 {% endblock %}
