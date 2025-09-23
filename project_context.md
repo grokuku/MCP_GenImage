@@ -153,19 +153,24 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
     4.  **Amélioration de l'UX :** Pour éviter les erreurs de saisie, les pages de configuration "General Settings" et "Describe Tool" ont été améliorées pour lister dynamiquement les modèles disponibles sur l'instance Ollama sélectionnée, remplaçant un champ de texte par un menu déroulant.
 *   **État à la fin :** Les fonctionnalités sont complètes, mais un bug critique a été découvert lors des tests.
 
+### 25. Résolution du Bug de Connectivité Ollama en Tâche de Fond (Session du 2025-09-23)
+*   **Résumé :** Cette session a été consacrée à la résolution du bug critique qui empêchait les appels à Ollama depuis les tâches de fond de FastAPI.
+    1.  **Diagnostic :** L'analyse a révélé que les requêtes HTTP vers Ollama n'étaient pas envoyées, pointant vers un problème de gestion du client HTTP dans le contexte d'exécution des `BackgroundTasks`.
+    2.  **Correction :** Le `OllamaClient` (`app/services/ollama_client.py`) a été refactorisé pour implémenter le protocole de gestionnaire de contexte asynchrone (`__aenter__`, `__aexit__`).
+    3.  **Implémentation :** Les appels au `OllamaClient` dans `app/api/mcp_routes.py` ont été modifiés pour utiliser la syntaxe `async with`, garantissant ainsi que le cycle de vie du client `httpx` sous-jacent est géré de manière robuste et fiable par le framework asynchrone.
+    4.  **Résultat :** Le bug est résolu. Les outils `describe_image` et `generate_image` (avec amélioration de prompt) sont maintenant pleinement fonctionnels.
+*   **État à la fin :** Application stable et fonctionnelle.
+
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Points Forts)
-*   **Périmètre Fonctionnel Complet :** Les outils `generate_image`, `upscale_image` et `describe_image` sont entièrement implémentés, tant au niveau du backend que de l'interface de test.
+*   **Périmètre Fonctionnel Complet :** Les outils `generate_image`, `upscale_image` et `describe_image` sont entièrement implémentés et stables, tant au niveau du backend que de l'interface de test.
 *   **Configuration Robuste :** La configuration des services externes (ComfyUI, Ollama) est entièrement gérée via l'interface web avec une expérience utilisateur améliorée (listes dynamiques).
 
 ### Problèmes Connus
-*   **BUG CRITIQUE : Timeout de connexion à Ollama dans les tâches de fond.**
-    *   **Symptôme :** Les appels à Ollama initiés depuis les tâches en arrière-plan (outils MCP `describe_image` ou `generate_image` avec `enhance_prompt=true`) échouent avec une erreur de timeout.
-    *   **Contradiction :** Les appels à Ollama initiés directement depuis l'interface web (pour lister les modèles) réussissent, ce qui prouve que la connectivité réseau de base entre les conteneurs est fonctionnelle.
-    *   **Hypothèse :** Le problème est lié au contexte d'exécution des `BackgroundTasks` de FastAPI, qui semble différent de celui d'une requête HTTP directe.
+*   Aucun bug critique connu.
 
 ### Plan d'Action Détaillé
 
@@ -174,7 +179,7 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 *   **Phase 11 : Débogage de la Connectivité Ollama en Tâche de Fond**
     *   **Objectif :** Résoudre le bug de timeout pour rendre les outils dépendant d'Ollama pleinement opérationnels.
     *   **Étapes Clés :**
-        1.  **Diagnostic Avancé :** Exécuter un test de connectivité simple (ex: via un script Python `httpx`) directement depuis l'intérieur du conteneur `mcp_genimage_server` pour confirmer le comportement en dehors du framework FastAPI.
-        2.  **Isoler le Problème :** Analyser les différences potentielles entre le contexte d'une requête web directe et celui d'une `BackgroundTask`.
-        3.  **Appliquer le Correctif :** Mettre en œuvre la solution identifiée.
-    *   **Statut :** 🚧 **À FAIRE (Priorité Haute)**
+        1.  **Diagnostic Avancé :** ✅ Terminé.
+        2.  **Isoler le Problème :** ✅ Terminé.
+        3.  **Appliquer le Correctif :** ✅ Terminé. Le bug a été résolu en refactorisant le `OllamaClient` pour utiliser un gestionnaire de contexte asynchrone (`async with`).
+    *   **Statut :** ✅ **Terminé**

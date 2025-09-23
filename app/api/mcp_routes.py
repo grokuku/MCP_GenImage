@@ -143,17 +143,14 @@ async def run_generation_task(
                     instance_id = int(instance_id_str)
                     instance = crud.get_ollama_instance_by_id(db, instance_id)
                     if instance and instance.is_active:
-                        ollama_client = None
                         try:
                             logger.info(f"Enhancing prompt with model '{model_name}' on instance '{instance.name}'.")
-                            ollama_client = OllamaClient(api_url=instance.base_url, model_name=model_name)
-                            enhanced_positive_prompt = await ollama_client.enhance_positive_prompt(args.prompt)
-                            enhanced_negative_prompt = await ollama_client.enhance_negative_prompt(args.negative_prompt, enhanced_positive_prompt)
+                            async with OllamaClient(api_url=instance.base_url, model_name=model_name) as ollama_client:
+                                enhanced_positive_prompt = await ollama_client.enhance_positive_prompt(args.prompt)
+                                enhanced_negative_prompt = await ollama_client.enhance_negative_prompt(args.negative_prompt, enhanced_positive_prompt)
                             log_data["llm_enhanced"] = True
                         except OllamaError as e:
                             logger.warning(f"Ollama prompt enhancement failed: {e}. Proceeding without enhancement.")
-                        finally:
-                            if ollama_client: await ollama_client.close()
                     else:
                         logger.warning("Prompt enhancement is enabled but the configured Ollama instance is inactive or not found. Skipping.")
                 else:
@@ -275,7 +272,6 @@ async def run_description_task(
     stream_id: str
 ):
     db = SessionLocal()
-    ollama_client = None
     try:
         # --- Configuration validation ---
         desc_settings = crud.get_description_settings(db)
@@ -302,8 +298,8 @@ async def run_description_task(
             raise ValueError(f"Failed to download or process image from URL: {e}")
 
         # --- Execute and Send Result ---
-        ollama_client = OllamaClient(api_url=instance.base_url, model_name=desc_settings.model_name)
-        description = await ollama_client.describe_image(prompt=prompt_template, image_base64=image_base64)
+        async with OllamaClient(api_url=instance.base_url, model_name=desc_settings.model_name) as ollama_client:
+            description = await ollama_client.describe_image(prompt=prompt_template, image_base64=image_base64)
         
         await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": {"content": [{"type": "text", "text": description}]}}})
 
@@ -313,8 +309,6 @@ async def run_description_task(
         await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "error": {"code": -32000, "message": error_message}}})
     
     finally:
-        if ollama_client:
-            await ollama_client.close()
         await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/end", "params": {"stream_id": stream_id}})
         manager.disconnect(stream_id)
         db.close()

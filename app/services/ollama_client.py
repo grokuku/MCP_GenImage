@@ -42,7 +42,7 @@ class OllamaError(Exception):
 class OllamaClient:
     """
     An asynchronous client to interact with an Ollama server for prompt manipulation.
-    This client is designed to be instantiated dynamically.
+    This client is designed to be instantiated dynamically and used as an async context manager.
     """
     def __init__(self, api_url: str, model_name: str, keep_alive: str = "5m", context_window: int = 0):
         if not api_url or not model_name:
@@ -54,6 +54,14 @@ class OllamaClient:
         # Set a much longer timeout for potentially slow LLM models
         self.client = httpx.AsyncClient(base_url=self.api_url, timeout=180.0)
         logger.info(f"Ollama client instantiated for model '{self.model_name}' at {self.api_url}")
+
+    async def __aenter__(self):
+        """Enter the async context manager."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit the async context manager, ensuring the client is closed."""
+        await self.close()
 
     async def _generate(self, messages: List[Dict[str, Any]]) -> str:
         """
@@ -70,7 +78,12 @@ class OllamaClient:
             "options": options
         }
         try:
-            logger.debug(f"Sending request to Ollama: {request_body['messages']}")
+            # To avoid logging base64 images, we'll create a log-safe version of the messages
+            log_safe_messages = [
+                {k: (v if k != 'images' else f'[{len(v)} image(s)]') for k, v in msg.items()}
+                for msg in messages
+            ]
+            logger.debug(f"Sending request to Ollama: {log_safe_messages}")
             response = await self.client.post("/api/chat", json=request_body)
             response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx responses
 
