@@ -1,5 +1,5 @@
 #### Fichier : project_context.md
-#### Date de dernière mise à jour : 2025-09-21
+#### Date de dernière mise à jour : 2025-09-23
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
 
 ---
@@ -12,7 +12,7 @@
 *   **Principe de Moindre Intervention** : Je ne modifie que ce qui est strictement nécessaire pour répondre à la demande. Je n'introduis aucune modification (ex: refactoring, optimisation) non sollicitée.
 *   **Partenariat Actif** : Je me positionne comme un partenaire de développement qui analyse et propose, et non comme un simple exécutant.
 
-#### **AXIOME 2 : ANALYSE ET SÉCURITÉ (Aucune Action Aveugle)**
+#### **AXIOME 2 : ANALYSE ET SÉCURITÉ (Aucune Action Avele)**
 
 *   **Connaissance de l'État Actuel** : Avant TOUTE modification de fichier, si je ne dispose pas de son contenu intégral et à jour dans notre session, je dois impérativement vous le demander.
 *   **Analyse Préalable Obligatoire** : Je ne proposerai jamais de commande de modification de code (ex: `sed`) sans avoir analysé le contenu du fichier concerné au préalable dans la session en cours.
@@ -61,7 +61,10 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 4.  **Gestion de Styles et de Workflows :** Permettre aux administrateurs de créer, éditer et supprimer des styles prédéfinis (fragments de prompts) et de mapper différents "types de rendu" (SDXL, Upscale, Vidéo...) à des fichiers de workflow ComfyUI spécifiques.
 5.  **Administration et Maintenance :** Intégrer des outils pour la maintenance, comme le nettoyage automatique des anciennes images, et fournir des statistiques d'utilisation détaillées.
 6.  **Conformité MCP :** Conserver la compatibilité avec le Standard Model Context Protocol comme interface principale pour les clients programmatiques (ex: GroBot), notamment via le streaming pour les tâches longues.
-7.  **Architecture Multi-Outils :** Exposer des outils distincts et spécialisés (ex: `generate_image`, `upscale_image`) via l'API MCP pour une meilleure clarté et une intégration simplifiée avec les agents LLM.
+7.  **Architecture Multi-Outils :** Exposer des outils distincts et spécialisés (ex: `generate_image`, `upscale_image`, `describe_image`) via l'API MCP pour une meilleure clarté et une intégration simplifiée avec les agents LLM.
+8.  **Architecture Multi-Outils Étendue (Vision Future) :**
+    *   **`detailer`** : Outil de retouche ciblée (inpainting) pour des zones spécifiques d'une image (visages, mains, etc.) en utilisant des workflows ComfyUI dédiés.
+    *   **`edit`** : Outil d'édition d'image par instruction (instruct-pix2pix) en utilisant un modèle comme Qwen-VL via ComfyUI.
 
 ---
 
@@ -69,9 +72,9 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 
 1.  **Isolation et Déploiement via Docker :** Le service est entièrement conteneurisé, garantissant une isolation complète des dépendances et une reproductibilité parfaite de l'environnement de production.
 2.  **Architecture Modulaire :** Le code est structuré en modules distincts par responsabilité (API, services, base de données, web) pour garantir la maintenabilité et faciliter l'ajout de nouvelles fonctionnalités sans refontes majeures.
-3.  **Persistance des Données :** Une base de données (SQLite pour sa simplicité) est utilisée pour stocker de manière persistante la configuration (styles, workflows) et les données d'exécution (statistiques). Les migrations de schéma sont gérées par Alembic.
+3.  **Persistance des Données :** Une base de données (SQLite pour sa simplicité) est utilisée pour stocker de manière persistante la configuration et les données d'exécution. Les migrations de schéma sont gérées par Alembic.
 4.  **Interface de Commande et de Gestion Séparées :** L'application expose deux types d'interfaces : une API JSON-RPC pour les commandes machine (MCP) et une interface web (HTML/Jinja2) pour la gestion et la configuration par un humain.
-5.  **Configuration par Variables d'Environnement :** Les paramètres critiques (connexions aux services externes comme ComfyUI) sont gérés via des variables d'environnement et un fichier `.env`, conformément aux bonnes pratiques des "12-factor app".
+5.  **Configuration Hybride :** La configuration critique de l'environnement (ex: URL de la base de données) est gérée par les variables d'environnement. La configuration des services applicatifs (instances ComfyUI, Ollama, paramètres des outils) est gérée dynamiquement via l'interface web et persistée en base de données.
 
 ---
 
@@ -122,9 +125,11 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
   │     └─ 📁 templates/
   │        ├─ 📄 base.html
   │        ├─ 📄 manage_comfyui.html
+  │        ├─ 📄 manage_description.html
   │        ├─ 📄 manage_ollama.html
   │        ├─ 📄 manage_render_types.html
   │        ├─ 📄 manage_styles.html
+  │        ├─ 📄 settings_general.html
   │        ├─ 📄 statistics.html
   │        └─ 📄 test_generation.html
   │
@@ -137,56 +142,39 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
 
 ## 9. SESSIONS DE DÉVELOPPEMENT (Historique)
 
-### 1-20. (Sessions Précédentes)
+### 1-23. (Sessions Précédentes)
 *   **Résumé :** Voir versions précédentes du document.
 
-### 21. Refonte vers une Architecture Multi-Outils (Session du 2025-09-21)
-*   **Résumé :** Cette session a été consacrée à une refonte architecturale majeure pour intégrer l'upscale en tant qu'outil MCP distinct. L'ensemble du backend (schémas, CRUD, API) et du frontend (gestion, tests) a été adapté pour supporter une liste d'outils dynamique. La base de données a été migrée pour gérer des workflows par défaut spécifiques à chaque mode (`generation`, `upscale`).
-*   **État à la fin :** Le développement de la nouvelle architecture est terminé, mais une erreur `AssertionError` au démarrage bloque les tests de validation finaux.
-
-### 22. Débogage et Finalisation de l'Architecture Multi-Outils (Session du 2025-09-21)
-*   **Résumé :** Cette session a été dédiée à la stabilisation de la nouvelle architecture.
-    1.  **Correction de l'Erreur WebSocket :** L' `AssertionError` a été résolue en corrigeant la logique de construction de l'URL WebSocket dans `mcp_routes.py` pour qu'elle n'inclue pas le chemin des fichiers statiques.
-    2.  **Correction du Logging d'Upscale :** Un bug de validation Pydantic qui empêchait de logger les erreurs d'upscale (quand le prompt était `None`) a été corrigé.
-    3.  **Correction de l'Upload d'Image :** Une erreur `Session is closed` dans le client ComfyUI a été résolue en corrigeant la portée de la session `aiohttp` pour englober à la fois le téléchargement et l'envoi de l'image.
-    4.  **Amélioration de l'Interface de Test :** La page de test a été modifiée pour afficher tous les `RenderTypes` (y compris ceux cachés), facilitant ainsi le débogage pour l'administrateur.
-    5.  **Diagnostic de Configuration :** Plusieurs erreurs de type `ValueError` ont été identifiées comme des problèmes de configuration (un `RenderType` non associé à une instance ComfyUI), et les instructions pour les résoudre ont été fournies.
-*   **État à la fin :** Tous les bugs identifiés sont résolus. L'architecture multi-outils est pleinement fonctionnelle pour la génération et l'upscale. Le projet est considéré comme stable.
+### 24. Finalisation de `describe`, Correction de Régression et Amélioration UX Ollama (Session du 2025-09-23)
+*   **Résumé :** Cette session a finalisé l'outil `describe` et corrigé des problèmes liés à la refonte de la gestion d'Ollama.
+    1.  **Implémentation Backend de `describe` :** L'outil `describe_image` a été rendu fonctionnel en ajoutant sa définition dans `schemas.py` et en implémentant la logique d'appel (y compris la gestion des WebSockets) dans `api/mcp_routes.py`.
+    2.  **Intégration Frontend de `describe` :** L'interface de test a été mise à jour (`test_generation.html`) pour inclure un onglet et un formulaire dédiés au nouvel outil.
+    3.  **Correction de Régression :** La disparition de l'interface de configuration pour l'amélioration des prompts a été identifiée comme une régression. Cette configuration a été réintégrée dans la page "General Settings".
+    4.  **Amélioration de l'UX :** Pour éviter les erreurs de saisie, les pages de configuration "General Settings" et "Describe Tool" ont été améliorées pour lister dynamiquement les modèles disponibles sur l'instance Ollama sélectionnée, remplaçant un champ de texte par un menu déroulant.
+*   **État à la fin :** Les fonctionnalités sont complètes, mais un bug critique a été découvert lors des tests.
 
 ---
 
 ## 10. État Actuel et Plan d'Action
 
 ### État Actuel (Points Forts)
-*   **Architecture Multi-Outils Robuste :** L'API expose des outils clairs et distincts (`generate_image`, `upscale_image`), ce qui est idéal pour les intégrations futures.
-*   **Fondation Extensible :** La base de données et la logique métier sont prêtes à accueillir de nouveaux modes (inpainting, etc.) avec un effort minimal.
-*   **Gestion Fine des Workflows :** Chaque outil peut avoir son propre ensemble de workflows et son workflow par défaut, configurable via l'interface web.
-*   **Pipeline de Traitement Complet :** Le système gère l'ensemble du cycle de vie, de l'application de styles à l'injection de paramètres multiples (seed, denoise, résolution) dans des workflows ComfyUI dynamiques.
+*   **Périmètre Fonctionnel Complet :** Les outils `generate_image`, `upscale_image` et `describe_image` sont entièrement implémentés, tant au niveau du backend que de l'interface de test.
+*   **Configuration Robuste :** La configuration des services externes (ComfyUI, Ollama) est entièrement gérée via l'interface web avec une expérience utilisateur améliorée (listes dynamiques).
 
 ### Problèmes Connus
-*   Aucun problème bloquant connu. Le service est stable.
+*   **BUG CRITIQUE : Timeout de connexion à Ollama dans les tâches de fond.**
+    *   **Symptôme :** Les appels à Ollama initiés depuis les tâches en arrière-plan (outils MCP `describe_image` ou `generate_image` avec `enhance_prompt=true`) échouent avec une erreur de timeout.
+    *   **Contradiction :** Les appels à Ollama initiés directement depuis l'interface web (pour lister les modèles) réussissent, ce qui prouve que la connectivité réseau de base entre les conteneurs est fonctionnelle.
+    *   **Hypothèse :** Le problème est lié au contexte d'exécution des `BackgroundTasks` de FastAPI, qui semble différent de celui d'une requête HTTP directe.
 
 ### Plan d'Action Détaillé
 
-*   **Phase 1 à 7 :** ✅ **Terminé**
+*   **Phase 1 à 10 :** ✅ **Terminé**
 
-*   **Phase 8 : Refonte vers une Architecture Multi-Outils**
-    *   **Objectif :** Remplacer le "super-outil" `generate_image` par des outils MCP distincts et spécialisés pour une meilleure clarté et extensibilité.
+*   **Phase 11 : Débogage de la Connectivité Ollama en Tâche de Fond**
+    *   **Objectif :** Résoudre le bug de timeout pour rendre les outils dépendant d'Ollama pleinement opérationnels.
     *   **Étapes Clés :**
-        1.  **Décision Architecturale :** ✅
-        2.  **Migration de la Base de Données (Defaults par Mode) :** ✅
-        3.  **Refonte des Schémas Pydantic (Un Schéma par Outil) :** ✅
-        4.  **Mise à Jour des CRUD :** ✅
-        5.  **Mise à Jour de l'Interface Web (Gestion & Tests) :** ✅
-        6.  **Refonte de l'API MCP (`tools/list` dynamique, `tools/call` routeur) :** ✅
-        7.  **Mise à Jour du Client ComfyUI :** ✅
-        8.  **Débogage des Régressions et Erreurs de Démarrage :** ✅ **Terminé**
-    *   **Statut :** ✅ **Terminé**
-
-*   **Phase 9 : Amélioration de l'Expérience Administrateur (UX)**
-    *   **Objectif :** Rendre l'interface de gestion plus professionnelle et agréable.
-    *   **Étapes Clés :**
-        1.  Intégration d'un framework CSS (Bootstrap, etc.).
-        2.  Ajout de JavaScript pour une meilleure interactivité (validation, etc.).
-        3.  Amélioration de la page de statistiques (graphiques).
-    *   **Statut :** 🚧 **À faire**
+        1.  **Diagnostic Avancé :** Exécuter un test de connectivité simple (ex: via un script Python `httpx`) directement depuis l'intérieur du conteneur `mcp_genimage_server` pour confirmer le comportement en dehors du framework FastAPI.
+        2.  **Isoler le Problème :** Analyser les différences potentielles entre le contexte d'une requête web directe et celui d'une `BackgroundTask`.
+        3.  **Appliquer le Correctif :** Mettre en œuvre la solution identifiée.
+    *   **Statut :** 🚧 **À FAIRE (Priorité Haute)**

@@ -45,6 +45,12 @@ class UpscaleImageParams(BaseModel):
     denoise: Optional[float] = Field(None, ge=0.0, le=1.0)
     seed: Optional[int] = None
 
+class DescribeImageParams(BaseModel):
+    """Defines the parameters for the 'describe_image' tool."""
+    input_image_url: str
+    description_type: Literal["natural", "optimized"] = "optimized"
+    language: Literal["en", "fr"] = "en"
+
 class ToolCallParams(BaseModel):
     """
     Generic wrapper for any tool call. The arguments are a dict
@@ -138,6 +144,34 @@ UPSCALE_IMAGE_TOOL_SCHEMA = {
     }
 }
 
+DESCRIBE_IMAGE_TOOL_SCHEMA = {
+    "name": "describe_image",
+    "title": "Describe an Image",
+    "description": "Analyzes an image and provides a description. It can return a natural language description or an optimized text-to-image prompt.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "input_image_url": {
+                "type": "string",
+                "description": "The URL of the source image to describe."
+            },
+            "description_type": {
+                "type": "string",
+                "description": "The type of description to generate.",
+                "enum": ["natural", "optimized"],
+                "default": "optimized"
+            },
+            "language": {
+                "type": "string",
+                "description": "The language of the returned description.",
+                "enum": ["en", "fr"],
+                "default": "en"
+            }
+        },
+        "required": ["input_image_url"]
+    }
+}
+
 
 # --- Database ORM Schemas ---
 
@@ -193,6 +227,43 @@ class ComfyUIInstance(ComfyUIInstanceBase):
     id: int
     is_active: bool
     compatible_render_types: List[RenderType] = []
+
+    class Config:
+        from_attributes = True
+
+# --- Ollama Schemas ---
+class OllamaInstanceBase(BaseModel):
+    name: str
+    base_url: str
+
+class OllamaInstanceCreate(OllamaInstanceBase):
+    pass
+
+class OllamaInstanceUpdate(OllamaInstanceBase):
+    pass
+
+class OllamaInstance(OllamaInstanceBase):
+    id: int
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+# --- DescriptionSettings Schemas ---
+class DescriptionSettingsBase(BaseModel):
+    ollama_instance_id: Optional[int] = None
+    model_name: Optional[str] = None
+    natural_prompt_template_en: Optional[str] = None
+    optimized_prompt_template_en: Optional[str] = None
+    natural_prompt_template_fr: Optional[str] = None
+    optimized_prompt_template_fr: Optional[str] = None
+
+class DescriptionSettingsUpdate(DescriptionSettingsBase):
+    pass
+
+class DescriptionSettings(DescriptionSettingsBase):
+    id: int
+    ollama_instance: Optional[OllamaInstance] = None
 
     class Config:
         from_attributes = True

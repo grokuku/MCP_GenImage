@@ -1,7 +1,8 @@
+# app/database/models.py
 # This file will contain our SQLAlchemy models.
 # We will add models for Styles, Workflows, Statistics, etc., in future steps.
 
-from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Table, BigInteger
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Table, BigInteger, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -140,6 +141,68 @@ class ComfyUIInstance(Base):
 
     def __repr__(self):
         return f"<ComfyUIInstance(id={self.id}, name='{self.name}', url='{self.base_url}', active={self.is_active})>"
+
+
+class OllamaInstance(Base):
+    """
+    Represents a configured Ollama server instance.
+    """
+    __tablename__ = "ollama_instances"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False)
+    base_url = Column(String, unique=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    # Relationship to the description settings (one-to-one)
+    description_settings = relationship(
+        "DescriptionSettings",
+        back_populates="ollama_instance",
+        uselist=False,
+        cascade="all, delete-orphan"
+    )
+
+    def __repr__(self):
+        return f"<OllamaInstance(id={self.id}, name='{self.name}', url='{self.base_url}', active={self.is_active})>"
+
+
+class DescriptionSettings(Base):
+    """
+    Represents the singleton configuration for the 'describe_image' tool.
+    """
+    __tablename__ = "description_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    ollama_instance_id = Column(Integer, ForeignKey("ollama_instances.id"), nullable=True)
+    model_name = Column(String, nullable=True)
+
+    natural_prompt_template_en = Column(Text, nullable=False, default=(
+        "Describe this image in a detailed, narrative paragraph. "
+        "Focus on the main subject, the setting, the colors, the lighting, and the overall mood."
+    ))
+    optimized_prompt_template_en = Column(Text, nullable=False, default=(
+        "Based on the provided image, generate a high-quality, detailed, and descriptive "
+        "text-to-image prompt that could be used to recreate or inspire a similar image. "
+        "Include details about the subject, style (e.g., photorealistic, illustration, fantasy art), "
+        "composition, lighting, and any relevant artistic keywords. "
+        "The prompt should be a single, coherent paragraph."
+    ))
+    natural_prompt_template_fr = Column(Text, nullable=False, default=(
+        "Décris cette image dans un paragraphe narratif et détaillé. "
+        "Concentre-toi sur le sujet principal, le décor, les couleurs, l'éclairage et l'ambiance générale."
+    ))
+    optimized_prompt_template_fr = Column(Text, nullable=False, default=(
+        "En te basant sur l'image fournie, génère un prompt text-to-image de haute qualité, détaillé et "
+        "descriptif qui pourrait être utilisé pour recréer ou inspirer une image similaire. "
+        "Inclus des détails sur le sujet, le style (ex: photoréaliste, illustration, art fantastique), "
+        "la composition, l'éclairage et tout mot-clé artistique pertinent. "
+        "Le prompt doit être un seul paragraphe cohérent."
+    ))
+
+    ollama_instance = relationship("OllamaInstance", back_populates="description_settings")
+
+    def __repr__(self):
+        return f"<DescriptionSettings(id={self.id}, model='{self.model_name}')>"
 
 
 class GenerationLog(Base):

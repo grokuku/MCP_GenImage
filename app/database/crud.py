@@ -348,6 +348,95 @@ def delete_comfyui_instance(db: Session, instance_id: int):
     return False
 
 
+# --- Ollama Instance CRUD Operations ---
+
+def get_ollama_instances(db: Session):
+    """Retrieves all Ollama instances from the database."""
+    return db.query(models.OllamaInstance).order_by(models.OllamaInstance.name).all()
+
+
+def get_ollama_instance_by_id(db: Session, instance_id: int):
+    """Retrieves a single Ollama instance by its ID."""
+    return db.query(models.OllamaInstance).filter(models.OllamaInstance.id == instance_id).first()
+
+
+def create_ollama_instance(db: Session, instance: schemas.OllamaInstanceCreate):
+    """Creates a new Ollama instance."""
+    exists = db.query(models.OllamaInstance).filter(
+        (models.OllamaInstance.name == instance.name) | (models.OllamaInstance.base_url == instance.base_url)
+    ).first()
+    if exists:
+        return None
+
+    db_instance = models.OllamaInstance(name=instance.name, base_url=instance.base_url)
+    db.add(db_instance)
+    db.commit()
+    db.refresh(db_instance)
+    return db_instance
+
+
+def update_ollama_instance(db: Session, instance_id: int, instance: schemas.OllamaInstanceUpdate):
+    """Updates an existing Ollama instance."""
+    db_instance = get_ollama_instance_by_id(db, instance_id)
+    if not db_instance:
+        return None
+
+    db_instance.name = instance.name
+    db_instance.base_url = instance.base_url
+    db.commit()
+    db.refresh(db_instance)
+    return db_instance
+
+
+def toggle_ollama_instance_active_status(db: Session, instance_id: int) -> Optional[models.OllamaInstance]:
+    """Toggles the is_active status of a specific Ollama instance."""
+    db_instance = get_ollama_instance_by_id(db, instance_id)
+    if not db_instance:
+        return None
+    
+    db_instance.is_active = not db_instance.is_active
+    db.commit()
+    db.refresh(db_instance)
+    return db_instance
+
+
+def delete_ollama_instance(db: Session, instance_id: int):
+    """Deletes an Ollama instance from the database by its ID."""
+    db_instance = get_ollama_instance_by_id(db, instance_id)
+    if db_instance:
+        db.delete(db_instance)
+        db.commit()
+        return True
+    return False
+
+
+# --- DescriptionSettings CRUD Operations ---
+
+def get_description_settings(db: Session) -> Optional[models.DescriptionSettings]:
+    """Retrieves the description settings, creating them if they don't exist."""
+    settings = db.query(models.DescriptionSettings).first()
+    if not settings:
+        settings = models.DescriptionSettings(id=1)
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+def update_description_settings(db: Session, settings_data: schemas.DescriptionSettingsUpdate):
+    """Updates the description settings."""
+    db_settings = get_description_settings(db)
+    
+    # Update fields from the Pydantic model
+    update_data = settings_data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_settings, key, value)
+    
+    db.commit()
+    db.refresh(db_settings)
+    return db_settings
+
+
 # --- GenerationLog CRUD Operations ---
 
 def create_generation_log(db: Session, log: schemas.GenerationLogCreate) -> models.GenerationLog:

@@ -1,17 +1,19 @@
 # app/web/web_routes.py
-# app/web/web_routes.py
 from pathlib import Path
 from typing import List, Optional
-from fastapi import APIRouter, Request, Depends, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Request, Depends, Form, HTTPException, Body
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 import logging
 import collections
+import aiohttp
+import base64
 
 from ..database import crud
 from ..database.session import get_db
 from .. import schemas
+from ..services.ollama_client import OllamaClient, OllamaError
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -367,51 +369,208 @@ async def handle_delete_comfyui_instance(
     return RedirectResponse(url="/settings/comfyui", status_code=303)
 
 
-# --- General & Ollama Settings Management ---
+# --- Ollama Instance Management ---
 
 @router.get("/settings/ollama", response_class=HTMLResponse)
 async def manage_ollama_settings(request: Request, db: Session = Depends(get_db)):
     """
-    Displays the page for managing Ollama and other general settings.
+    Displays the page for managing Ollama server instances.
     """
-    settings = crud.get_all_settings(db)
+    instances = crud.get_ollama_instances(db)
     return templates.TemplateResponse(
         "manage_ollama.html",
         {
-            "request": request, "title": "General & Ollama Settings",
-            "active_page": "ollama_settings",
+            "request": request, "title": "Manage Ollama Instances",
+            "active_page": "ollama_settings", "instances": instances
+        }
+    )
+
+@router.post("/settings/ollama/add", response_class=RedirectResponse)
+async def handle_add_ollama_instance(
+    name: str = Form(...),
+    base_url: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Handles adding a new Ollama instance."""
+    instance_data = schemas.OllamaInstanceCreate(name=name, base_url=base_url.strip())
+    if not crud.create_ollama_instance(db, instance=instance_data):
+        logger.warning(f"Duplicate Ollama instance name or URL: {name} / {base_url}")
+    return RedirectResponse(url="/settings/ollama", status_code=303)
+
+@router.post("/settings/ollama/update/{instance_id}", response_class=RedirectResponse)
+async def handle_update_ollama_instance(
+    instance_id: int,
+    name: str = Form(...),
+    base_url: str = Form(...),
+    db: Session = Depends(get_db)
+):
+    """Handles updating an existing Ollama instance."""
+    instance_data = schemas.OllamaInstanceUpdate(name=name, base_url=base_url.strip())
+    crud.update_ollama_instance(db, instance_id=instance_id, instance=instance_data)
+    return RedirectResponse(url="/settings/ollama", status_code=303)
+
+@router.post("/settings/ollama/toggle-active/{instance_id}", response_class=RedirectResponse)
+async def handle_toggle_ollama_active(
+    instance_id: int,
+    db: Session = Depends(get_db)
+):
+    """Handles toggling the is_active status of an Ollama instance."""
+    crud.toggle_ollama_instance_active_status(db, instance_id=instance_id)
+    return RedirectResponse(url="/settings/ollama", status_code=303)
+
+@router.post("/settings/ollama/delete/{instance_id}", response_class=RedirectResponse)
+async def handle_delete_ollama_instance(
+    instance_id: int,
+    db: Session = Depends(get_db)
+):
+    """Handles deleting an Ollama instance."""
+    crud.delete_ollama_instance(db, instance_id=instance_id)
+    return RedirectResponse(url="/settings/ollama", status_code=303)
+
+
+# --- Description Tool Settings Management ---
+
+@router.get("/settings/description", response_class=HTMLResponse)
+async def manage_description_settings(request: Request, db: Session = Depends(get_db)):
+    settings = crud.get_description_settings(db)
+    ollama_instances = crud.get_ollama_instances(db)
+    return templates.TemplateResponse(
+        "manage_description.html",
+        {
+            "request": request, "title": "Describe Tool Settings",
+            "active_page": "description_settings",
+            "settings": settings,
+            "ollama_instances": ollama_instances
+        }
+    )
+
+@router.post("/settings/description", response_class=RedirectResponse)
+async def handle_update_description_settings(
+    db: Session = Depends(get_db),
+    ollama_instance_id: Optional[int] = Form(None),
+    model_name: str = Form(""),
+    natural_prompt_template_en: str = Form(""),
+    optimized_prompt_template_en: str = Form(""),
+    natural_prompt_template_fr: str = Form(""),
+    optimized_prompt_template_fr: str = Form("")
+):
+    settings_data = schemas.DescriptionSettingsUpdate(
+        ollama_instance_id=ollama_instance_id, model_name=model_name,
+        natural_prompt_template_en=natural_prompt_template_en,
+        optimized_prompt_template_en=optimized_prompt_template_en,
+        natural_prompt_template_fr=natural_prompt_template_fr,
+        optimized_prompt_template_fr=optimized_prompt_template_fr
+    )
+    crud.update_description_settings(db, settings_data=settings_data)
+    return RedirectResponse(url="/settings/description", status_code=303)
+
+
+# --- General Settings Management ---
+
+@router.get("/settings/general", response_class=HTMLResponse)
+async def manage_general_settings(request: Request, db: Session = Depends(get_db)):
+    """
+    Displays the page for managing general application settings.
+    """
+    settings = crud.get_all_settings(db)
+    ollama_instances = crud.get_ollama_instances(db)
+    return templates.TemplateResponse(
+        "settings_general.html",
+        {
+            "request": request, "title": "General Settings",
+            "active_page": "general_settings",
+            "ollama_instances": ollama_instances,
             "settings": {
                 "output_url_base": settings.get("OUTPUT_URL_BASE", ""),
                 "default_upscale_denoise": settings.get("DEFAULT_UPSCALE_DENOISE", "0.2"),
-                "ollama_api_url": settings.get("OLLAMA_API_URL", ""),
-                "ollama_model_name": settings.get("OLLAMA_MODEL_NAME", ""),
-                "ollama_keep_alive": settings.get("OLLAMA_KEEP_ALIVE", "5m"),
-                "ollama_context_window": settings.get("OLLAMA_CONTEXT_WINDOW", "2048"),
+                "prompt_enhancement_ollama_instance_id": settings.get("PROMPT_ENHANCEMENT_OLLAMA_INSTANCE_ID"),
+                "prompt_enhancement_model_name": settings.get("PROMPT_ENHANCEMENT_MODEL_NAME", ""),
             }
         }
     )
 
-
-@router.post("/settings/ollama", response_class=RedirectResponse)
-async def handle_update_ollama_settings(
+@router.post("/settings/general", response_class=RedirectResponse)
+async def handle_update_general_settings(
     db: Session = Depends(get_db),
     output_url_base: str = Form(""),
     default_upscale_denoise: str = Form("0.2"),
-    ollama_api_url: str = Form(""),
-    ollama_model_name: str = Form(""),
-    ollama_keep_alive: str = Form("5m"),
-    ollama_context_window: str = Form("2048")
+    prompt_enhancement_ollama_instance_id: Optional[str] = Form(""),
+    prompt_enhancement_model_name: str = Form("")
 ):
     """
-    Handles updating Ollama and other general settings in the database.
+    Handles updating general settings in the database.
     """
     settings_to_update = {
         "OUTPUT_URL_BASE": output_url_base.strip(),
         "DEFAULT_UPSCALE_DENOISE": default_upscale_denoise.strip(),
-        "OLLAMA_API_URL": ollama_api_url.strip(),
-        "OLLAMA_MODEL_NAME": ollama_model_name.strip(),
-        "OLLAMA_KEEP_ALIVE": ollama_keep_alive.strip(),
-        "OLLAMA_CONTEXT_WINDOW": ollama_context_window.strip()
+        "PROMPT_ENHANCEMENT_OLLAMA_INSTANCE_ID": prompt_enhancement_ollama_instance_id,
+        "PROMPT_ENHANCEMENT_MODEL_NAME": prompt_enhancement_model_name.strip(),
     }
     crud.update_settings(db, settings_data=settings_to_update)
-    return RedirectResponse(url="/settings/ollama", status_code=303)
+    return RedirectResponse(url="/settings/general", status_code=303)
+
+
+# --- API Helper for Web UI ---
+
+class OllamaApiUrlPayload(schemas.BaseModel):
+    ollama_api_url: str
+
+@router.post("/api/v1/ollama/list-models")
+async def api_list_ollama_models(payload: OllamaApiUrlPayload):
+    """
+    API endpoint for the web UI to dynamically fetch models from an Ollama server.
+    """
+    if not payload.ollama_api_url:
+        raise HTTPException(status_code=400, detail="Ollama API URL is required.")
+    
+    client = None
+    try:
+        # We instantiate the client with a dummy model name as it's not needed for listing models
+        client = OllamaClient(api_url=payload.ollama_api_url, model_name="dummy")
+        models = await client.list_models()
+        return JSONResponse(content={"models": models})
+    except OllamaError as e:
+        logger.warning(f"Failed to list Ollama models for URL {payload.ollama_api_url}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if client:
+            await client.close()
+
+class DescribeTestPayload(schemas.BaseModel):
+    image_url: str
+    description_type: str
+    language: str
+
+@router.post("/api/v1/tools/test-describe")
+async def api_test_describe_tool(payload: DescribeTestPayload, db: Session = Depends(get_db)):
+    settings = crud.get_description_settings(db)
+    if not settings or not settings.ollama_instance_id or not settings.model_name:
+        raise HTTPException(status_code=400, detail="Describe tool is not configured in settings.")
+    
+    instance = crud.get_ollama_instance_by_id(db, settings.ollama_instance_id)
+    if not instance or not instance.is_active:
+        raise HTTPException(status_code=400, detail="The configured Ollama instance is not active or does not exist.")
+    
+    template_key = f"{payload.description_type}_prompt_template_{payload.language}"
+    prompt_template = getattr(settings, template_key, None)
+    if not prompt_template:
+        raise HTTPException(status_code=400, detail="Invalid description type or language.")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(payload.image_url) as response:
+                response.raise_for_status()
+                image_data = await response.read()
+                image_base64 = base64.b64encode(image_data).decode('utf-8')
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download or process image: {e}")
+    
+    client = None
+    try:
+        client = OllamaClient(api_url=instance.base_url, model_name=settings.model_name)
+        description = await client.describe_image(prompt=prompt_template, image_base64=image_base64)
+        return JSONResponse(content={"description": description})
+    except OllamaError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if client: await client.close()

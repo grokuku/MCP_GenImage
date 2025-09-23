@@ -55,9 +55,10 @@ class OllamaClient:
         self.client = httpx.AsyncClient(base_url=self.api_url, timeout=180.0)
         logger.info(f"Ollama client instantiated for model '{self.model_name}' at {self.api_url}")
 
-    async def _generate(self, messages: List[Dict[str, str]]) -> str:
+    async def _generate(self, messages: List[Dict[str, Any]]) -> str:
         """
         Private helper to send a structured request to the Ollama chat API.
+        Can handle both text-only and multimodal (text + image) messages.
         """
         options = { "num_ctx": self.context_window } if self.context_window > 0 else {}
 
@@ -69,7 +70,7 @@ class OllamaClient:
             "options": options
         }
         try:
-            logger.debug(f"Sending request to Ollama: {request_body}")
+            logger.debug(f"Sending request to Ollama: {request_body['messages']}")
             response = await self.client.post("/api/chat", json=request_body)
             response.raise_for_status()  # Raises HTTPStatusError for 4xx/5xx responses
 
@@ -139,6 +140,20 @@ class OllamaClient:
             {"role": "system", "content": ENHANCE_NEGATIVE_PROMPT_SYSTEM_MESSAGE},
             {"role": "user", "content": user_message}
         ]
+        return await self._generate(messages)
+
+    async def describe_image(self, prompt: str, image_base64: str) -> str:
+        """
+        Sends a prompt and a base64 encoded image to a multimodal LLM.
+        """
+        if not prompt or not image_base64:
+            raise ValueError("A prompt and a base64 encoded image are required.")
+
+        messages = [{
+            "role": "user",
+            "content": prompt,
+            "images": [image_base64]
+        }]
         return await self._generate(messages)
 
     async def list_models(self) -> List[Dict[str, Any]]:

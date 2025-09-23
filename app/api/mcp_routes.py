@@ -1,5 +1,4 @@
 # app/api/mcp_routes.py
-# app/api/mcp_routes.py
 from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError, BaseModel
@@ -14,11 +13,13 @@ import random
 import json
 from pathlib import Path
 from urllib.parse import urlparse
+import aiohttp
+import base64
 
 from ..schemas import (
     JsonRpcRequest, JsonRpcResponse, JsonRpcError, ToolCallParams,
-    GenerateImageParams, UpscaleImageParams,
-    GENERATE_IMAGE_TOOL_SCHEMA, UPSCALE_IMAGE_TOOL_SCHEMA,
+    GenerateImageParams, UpscaleImageParams, DescribeImageParams,
+    GENERATE_IMAGE_TOOL_SCHEMA, UPSCALE_IMAGE_TOOL_SCHEMA, DESCRIBE_IMAGE_TOOL_SCHEMA,
     JsonRpcId, GenerationLogCreate
 )
 from ..services.comfyui_client import ComfyUIClient, ComfyUIError, ComfyUIConnectionError
@@ -67,7 +68,7 @@ async def websocket_endpoint(websocket: WebSocket, stream_id: str):
     finally:
         manager.disconnect(stream_id)
 
-# --- Helper Functions for Generation Task ---
+# --- Helper Functions for Background Tasks ---
 
 def _find_node_id_by_title(workflow: dict, title: str) -> Optional[str]:
     for node_id, node_data in workflow.items():
@@ -118,21 +119,47 @@ async def run_generation_task(
         "negative_prompt": getattr(args, 'negative_prompt', None) or '',
         "status": "FAILED", "render_type_name": args.render_type, "style_names": ", ".join(getattr(args, 'style_names', [])),
         "aspect_ratio": getattr(args, 'aspect_ratio', None), "seed": args.seed,
-        "llm_enhanced": getattr(args, 'enhance_prompt', False)
+        "llm_enhanced": False # Default to False
     }
 
     try:
         final_seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
         log_data["seed"] = final_seed
         
-        # --- Prompt Processing (for generate_image only) ---
-        final_prompt = getattr(args, 'prompt', '')
-        final_negative_prompt = getattr(args, 'negative_prompt', '')
         render_type_name = args.render_type
-
+        
+        # --- Prompt Processing (for generate_image only) ---
         if tool_name == "generate_image":
-            # This logic is complex and specific to generation, so we keep it here
-            # In a future refactor, it could become a dedicated service
+            enhanced_positive_prompt = args.prompt
+            enhanced_negative_prompt = args.negative_prompt
+
+            # 1. LLM Enhancement (if requested and configured)
+            if args.enhance_prompt:
+                all_db_settings = crud.get_all_settings(db)
+                instance_id_str = all_db_settings.get("PROMPT_ENHANCEMENT_OLLAMA_INSTANCE_ID")
+                model_name = all_db_settings.get("PROMPT_ENHANCEMENT_MODEL_NAME")
+                
+                if instance_id_str and model_name:
+                    instance_id = int(instance_id_str)
+                    instance = crud.get_ollama_instance_by_id(db, instance_id)
+                    if instance and instance.is_active:
+                        ollama_client = None
+                        try:
+                            logger.info(f"Enhancing prompt with model '{model_name}' on instance '{instance.name}'.")
+                            ollama_client = OllamaClient(api_url=instance.base_url, model_name=model_name)
+                            enhanced_positive_prompt = await ollama_client.enhance_positive_prompt(args.prompt)
+                            enhanced_negative_prompt = await ollama_client.enhance_negative_prompt(args.negative_prompt, enhanced_positive_prompt)
+                            log_data["llm_enhanced"] = True
+                        except OllamaError as e:
+                            logger.warning(f"Ollama prompt enhancement failed: {e}. Proceeding without enhancement.")
+                        finally:
+                            if ollama_client: await ollama_client.close()
+                    else:
+                        logger.warning("Prompt enhancement is enabled but the configured Ollama instance is inactive or not found. Skipping.")
+                else:
+                    logger.warning("Prompt enhancement is enabled but not fully configured in General Settings. Skipping.")
+
+            # 2. Style selection and Render Type override
             style_names_to_apply = args.style_names
             if not style_names_to_apply:
                 default_styles = crud.get_default_styles(db)
@@ -147,8 +174,9 @@ async def run_generation_task(
                     elif not render_type_name and style.default_render_type:
                         render_type_name = style.default_render_type.name
 
-            positive_parts = [args.prompt]
-            negative_parts = [args.negative_prompt]
+            # 3. Assemble final prompts
+            positive_parts = [enhanced_positive_prompt]
+            negative_parts = [enhanced_negative_prompt]
             if style_names_to_apply:
                 for style_name in style_names_to_apply:
                     style = crud.get_style_by_name(db, name=style_name)
@@ -158,6 +186,9 @@ async def run_generation_task(
             
             final_prompt = ", ".join(filter(None, positive_parts))
             final_negative_prompt = ", ".join(filter(None, negative_parts))
+        else: # For upscale_image
+            final_prompt = getattr(args, 'prompt', '')
+            final_negative_prompt = getattr(args, 'negative_prompt', '')
 
         log_data.update({"positive_prompt": final_prompt or '', "negative_prompt": final_negative_prompt or ''})
 
@@ -229,11 +260,61 @@ async def run_generation_task(
         error_message = str(e)
         logger.error(f"Error for stream {stream_id}: {error_message}", exc_info=True)
         log_data["error_message"] = error_message
-        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.O", "method": "stream/chunk", "params": {"stream_id": stream_id, "error": {"code": -32000, "message": error_message}}})
+        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "error": {"code": -32000, "message": error_message}}})
     
     finally:
         log_data["duration_ms"] = int((time.monotonic() - start_time) * 1000)
         _log_generation_result(db, log_data)
+        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/end", "params": {"stream_id": stream_id}})
+        manager.disconnect(stream_id)
+        db.close()
+
+async def run_description_task(
+    args: DescribeImageParams,
+    request_id: JsonRpcId,
+    stream_id: str
+):
+    db = SessionLocal()
+    ollama_client = None
+    try:
+        # --- Configuration validation ---
+        desc_settings = crud.get_description_settings(db)
+        if not desc_settings or not desc_settings.ollama_instance_id or not desc_settings.model_name:
+            raise ValueError("The 'describe_image' tool is not configured.")
+
+        instance = crud.get_ollama_instance_by_id(db, desc_settings.ollama_instance_id)
+        if not instance or not instance.is_active:
+            raise ValueError("The configured Ollama instance for the describe tool is inactive or does not exist.")
+
+        template_key = f"{args.description_type}_prompt_template_{args.language}"
+        prompt_template = getattr(desc_settings, template_key, None)
+        if not prompt_template:
+            raise ValueError(f"Invalid description type or language. Could not find template '{template_key}'.")
+
+        # --- Image Processing ---
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(args.input_image_url) as response:
+                    response.raise_for_status()
+                    image_data = await response.read()
+                    image_base64 = base64.b64encode(image_data).decode('utf-8')
+        except Exception as e:
+            raise ValueError(f"Failed to download or process image from URL: {e}")
+
+        # --- Execute and Send Result ---
+        ollama_client = OllamaClient(api_url=instance.base_url, model_name=desc_settings.model_name)
+        description = await ollama_client.describe_image(prompt=prompt_template, image_base64=image_base64)
+        
+        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": {"content": [{"type": "text", "text": description}]}}})
+
+    except Exception as e:
+        error_message = str(e)
+        logger.error(f"Error for stream {stream_id}: {error_message}", exc_info=True)
+        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "error": {"code": -32000, "message": error_message}}})
+    
+    finally:
+        if ollama_client:
+            await ollama_client.close()
         await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/end", "params": {"stream_id": stream_id}})
         manager.disconnect(stream_id)
         db.close()
@@ -271,11 +352,12 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             tool_def = copy.deepcopy(UPSCALE_IMAGE_TOOL_SCHEMA)
             upscale_type_names = [rt.name for rt in upscale_render_types]
             tool_def["inputSchema"]["properties"]["render_type"]["enum"] = upscale_type_names
-            # --- START CORRECTION ---
-            # Simplified logic: directly assigns the enum values since we know the key exists.
             tool_def["inputSchema"]["properties"]["upscale_type"]["enum"] = upscale_type_names
-            # --- END CORRECTION ---
             tools.append(tool_def)
+
+        desc_settings = crud.get_description_settings(db)
+        if desc_settings and desc_settings.ollama_instance_id and desc_settings.model_name:
+            tools.append(DESCRIBE_IMAGE_TOOL_SCHEMA)
 
         return JsonRpcResponse(result={"tools": tools}, id=request_id)
 
@@ -285,10 +367,18 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             tool_name = params.name
             arguments = params.arguments
             
+            task_function = None
+            validated_args = None
+
             if tool_name == "generate_image":
                 validated_args = GenerateImageParams.model_validate(arguments)
+                task_function = run_generation_task
             elif tool_name == "upscale_image":
                 validated_args = UpscaleImageParams.model_validate(arguments)
+                task_function = run_generation_task # Reuses the same task runner
+            elif tool_name == "describe_image":
+                validated_args = DescribeImageParams.model_validate(arguments)
+                task_function = run_description_task
             else:
                 raise ValueError(f"Tool '{tool_name}' not found.")
 
@@ -303,7 +393,11 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
                 scheme = "ws" if request.url.scheme == "http" else "wss"
                 ws_url = f"{scheme}://{request.url.hostname}:{request.url.port}/ws/stream/{stream_id}"
             
-            background_tasks.add_task(run_generation_task, tool_name=tool_name, args=validated_args, request_id=request_id, stream_id=stream_id)
+            task_kwargs = {"args": validated_args, "request_id": request_id, "stream_id": stream_id}
+            if tool_name in ["generate_image", "upscale_image"]:
+                task_kwargs["tool_name"] = tool_name
+
+            background_tasks.add_task(task_function, **task_kwargs)
 
             response = {"jsonrpc": "2.0", "method": "stream/start", "params": {"stream_id": stream_id, "ws_url": ws_url}, "id": request_id}
             return JSONResponse(content=response)
@@ -315,7 +409,3 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             return create_error_response(request_id, -32603, "Internal server error.")
     
     return create_error_response(request_id, -32601, f"Method '{rpc_request.method}' not found.")
-
-# --- Web UI Helper API Endpoints ---
-# These are secondary and don't need to be part of the main refactor for now.
-# They will continue to work for the 'generate_image' part of the UI.

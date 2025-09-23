@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} - MCP GenImage{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>{{ title }}</h1>
+    <p>Configure the settings for the 'describe_image' tool.</p>
+
+    <!-- Configuration Form -->
+    <div class="form-section">
+        <h2>Tool Configuration</h2>
+        <form action="/settings/description" method="post">
+            <div class="form-group">
+                <label for="ollama_instance_id">Ollama Instance for Description</label>
+                <select id="ollama_instance_id" name="ollama_instance_id">
+                    <option value="">-- Select an Instance --</option>
+                    {% for instance in ollama_instances %}
+                    <option value="{{ instance.id }}" data-url="{{ instance.base_url }}" {% if settings and settings.ollama_instance_id==instance.id %}selected{% endif %}>
+                        {{ instance.name }} ({{ instance.base_url }})
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="model_name">Multimodal Model Name</label>
+                <select id="model_name" name="model_name">
+                        <option value="">-- Select an instance first --</option>
+                </select>
+            </div>
+
+            <h3>English Prompt Templates</h3>
+            <div class="form-group">
+                <label for="natural_prompt_template_en">Natural Description (EN)</label>
+                <textarea id="natural_prompt_template_en"
+                    name="natural_prompt_template_en">{{ settings.natural_prompt_template_en }}</textarea>
+            </div>
+            <div class="form-group">
+                <label for="optimized_prompt_template_en">Optimized Prompt (EN)</label>
+                <textarea id="optimized_prompt_template_en"
+                    name="optimized_prompt_template_en">{{ settings.optimized_prompt_template_en }}</textarea>
+            </div>
+
+            <h3>French Prompt Templates</h3>
+            <div class="form-group">
+                <label for="natural_prompt_template_fr">Natural Description (FR)</label>
+                <textarea id="natural_prompt_template_fr"
+                    name="natural_prompt_template_fr">{{ settings.natural_prompt_template_fr }}</textarea>
+            </div>
+            <div class="form-group">
+                <label for="optimized_prompt_template_fr">Optimized Prompt (FR)</label>
+                <textarea id="optimized_prompt_template_fr"
+                    name="optimized_prompt_template_fr">{{ settings.optimized_prompt_template_fr }}</textarea>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </form>
+    </div>
+
+    <!-- Test Section -->
+    <div class="form-section" style="margin-top: 2em;">
+        <h2>Test Tool</h2>
+        <p>Test the description tool with the currently saved settings.</p>
+        <div class="form-group">
+            <label for="test_image_url">Image URL to Describe</label>
+            <input type="url" id="test_image_url" placeholder="https://example.com/image.png">
+        </div>
+        <div class="form-group">
+            <label for="test_description_type">Description Type</label>
+            <select id="test_description_type">
+                <option value="natural">Natural Description</option>
+                <option value="optimized">Optimized Prompt</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label for="test_language">Language</label>
+            <select id="test_language">
+                <option value="en">English</option>
+                <option value="fr">French</option>
+            </select>
+        </div>
+        <button id="test-btn" type="button" class="btn btn-secondary">Run Test</button>
+
+        <div id="test-result-container" style="display: none; margin-top: 1.5em;">
+            <div id="test-loading" style="display: none;">Processing...</div>
+            <div id="test-error" class="result-box" style="display: none; background-color: #5c2c2c;"></div>
+            <div id="test-success" class="result-box" style="display: none;"></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- Dynamic Model Loading for Configuration Form ---
+        const instanceSelect = document.getElementById('ollama_instance_id');
+        const modelSelect = document.getElementById('model_name');
+        const currentlySavedModel = "{{ settings.model_name or '' }}";
+
+        async function updateModelList() {
+            const selectedOption = instanceSelect.options[instanceSelect.selectedIndex];
+            const instanceUrl = selectedOption.dataset.url;
+
+            modelSelect.innerHTML = '<option value="">Loading...</option>';
+
+            if (!instanceUrl) {
+                modelSelect.innerHTML = '<option value="">-- Select an instance first --</option>';
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/v1/ollama/list-models', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ollama_api_url: instanceUrl })
+                });
+
+                if (!response.ok) throw new Error((await response.json()).detail || 'Failed to fetch');
+
+                const data = await response.json();
+                modelSelect.innerHTML = '<option value="">-- Select a multimodal model --</option>';
+
+                if (data.models && data.models.length > 0) {
+                    data.models.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.name;
+                        option.textContent = model.name;
+                        if (model.name === currentlySavedModel) {
+                            option.selected = true;
+                        }
+                        modelSelect.appendChild(option);
+                    });
+                } else {
+                    modelSelect.innerHTML = '<option value="">-- No models found --</option>';
+                }
+
+            } catch (error) {
+                console.error('Error fetching Ollama models:', error);
+                modelSelect.innerHTML = `<option value="">-- Error: ${error.message} --</option>`;
+            }
+        }
+
+        instanceSelect.addEventListener('change', updateModelList);
+        if (instanceSelect.value) { // Trigger on page load if an instance is already selected
+            updateModelList();
+        }
+
+        // --- Test Section Logic ---
+        document.getElementById('test-btn').addEventListener('click', async () => {
+            const testBtn = document.getElementById('test-btn');
+            const loading = document.getElementById('test-loading');
+            const errorDisplay = document.getElementById('test-error');
+            const successDisplay = document.getElementById('test-success');
+            const resultContainer = document.getElementById('test-result-container');
+
+            // Reset UI
+            resultContainer.style.display = 'block';
+            loading.style.display = 'block';
+            errorDisplay.style.display = 'none';
+            successDisplay.style.display = 'none';
+            testBtn.disabled = true;
+
+            const payload = {
+                image_url: document.getElementById('test_image_url').value,
+                description_type: document.getElementById('test_description_type').value,
+                language: document.getElementById('test_language').value,
+            };
+
+            try {
+                const response = await fetch('/api/v1/tools/test-describe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(result.detail || 'An unknown error occurred.');
+                }
+
+                successDisplay.textContent = result.description;
+                successDisplay.style.display = 'block';
+
+            } catch (error) {
+                errorDisplay.textContent = 'Error: ' + error.message;
+                errorDisplay.style.display = 'block';
+            } finally {
+                loading.style.display = 'none';
+                testBtn.disabled = false;
+            }
+        });
+    });
+</script>
+{% endblock %}
