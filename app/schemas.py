@@ -118,6 +118,13 @@ UPSCALE_IMAGE_TOOL_SCHEMA = {
                 "type": "string",
                 "description": "Optional. The specific upscaling workflow to use."
             },
+            # --- START CORRECTION ---
+            "upscale_type": {
+                "type": "string",
+                "title": "Upscale Type",
+                "description": "The specific upscaling model or method to use."
+            },
+            # --- END CORRECTION ---
             "denoise": {
                 "type": "number",
                 "description": "Optional. Denoising factor (0.0 to 1.0). Higher values allow for more creative changes."

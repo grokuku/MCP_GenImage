@@ -269,7 +269,12 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
         upscale_render_types = [rt for rt in visible_render_types if rt.generation_mode == 'upscale']
         if upscale_render_types:
             tool_def = copy.deepcopy(UPSCALE_IMAGE_TOOL_SCHEMA)
-            tool_def["inputSchema"]["properties"]["render_type"]["enum"] = [rt.name for rt in upscale_render_types]
+            upscale_type_names = [rt.name for rt in upscale_render_types]
+            tool_def["inputSchema"]["properties"]["render_type"]["enum"] = upscale_type_names
+            # --- START CORRECTION ---
+            # Simplified logic: directly assigns the enum values since we know the key exists.
+            tool_def["inputSchema"]["properties"]["upscale_type"]["enum"] = upscale_type_names
+            # --- END CORRECTION ---
             tools.append(tool_def)
 
         return JsonRpcResponse(result={"tools": tools}, id=request_id)
