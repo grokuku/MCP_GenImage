@@ -1,4 +1,4 @@
-# app/api/mcp_routes.py
+#### Fichier: app/api/mcp_routes.py
 from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError, BaseModel
@@ -461,12 +461,13 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
         allowed_styles = crud.get_allowed_styles_for_generator(db)
         if allowed_styles:
             tool_def = copy.deepcopy(PROMPT_GENERATOR_TOOL_SCHEMA)
-            # --- START OF FIX ---
             tool_def["inputSchema"]["properties"]["render_style"]["enum"] = [s.name for s in allowed_styles]
-            # --- END OF FIX ---
             tools.append(tool_def)
 
-        return JsonRpcResponse(result={"tools": tools}, id=request_id)
+        # --- START OF FIX: Ensure proper JSON serialization ---
+        response_model = JsonRpcResponse(result={"tools": tools}, id=request_id)
+        return JSONResponse(content=response_model.model_dump(exclude_none=True))
+        # --- END OF FIX ---
 
     if rpc_request.method == "tools/call":
         try:
@@ -482,7 +483,10 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
                     f"**Negative Prompt:**\n```\n{result.negative_prompt}\n```"
                 )
                 result_content = {"content": [{"type": "text", "text": formatted_text}]}
-                return JsonRpcResponse(result=result_content, id=request_id)
+                # --- START OF FIX: Ensure proper JSON serialization ---
+                response_model = JsonRpcResponse(result=result_content, id=request_id)
+                return JSONResponse(content=response_model.model_dump(exclude_none=True))
+                # --- END OF FIX ---
 
             task_function = None
             validated_args = None
