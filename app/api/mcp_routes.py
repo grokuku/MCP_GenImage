@@ -318,7 +318,6 @@ async def run_description_task(
 def _extract_json_list(text: str) -> List[Any]:
     """Robustly extracts a JSON list from a string that may contain other text."""
     try:
-        # Find the first '[' and the last ']'
         start_index = text.find('[')
         end_index = text.rfind(']')
         if start_index != -1 and end_index != -1 and end_index > start_index:
@@ -339,6 +338,14 @@ async def run_prompt_generator_task(
     args: GeneratePromptParams, db: Session
 ) -> GeneratePromptResult:
     """Executes the complete workflow for the 'generate_prompt' tool."""
+    DEFAULT_SUBJECTS = [
+        "a majestic dragon flying over a mountain range",
+        "a futuristic cityscape at night with flying vehicles",
+        "an enchanted forest with glowing mushrooms and mythical creatures",
+        "a lone astronaut discovering an alien artifact on a desolate planet",
+        "a steampunk-inspired inventor in their cluttered workshop"
+    ]
+
     # 0. Get Configuration
     settings = crud.get_prompt_generator_settings(db)
     allowed_styles = crud.get_allowed_styles_for_generator(db)
@@ -360,9 +367,17 @@ async def run_prompt_generator_task(
         # 1. Determine Subject
         subject = args.subject
         if not subject:
-            prompt = f"Generate {settings.subjects_to_propose} creative and diverse subjects for an image. Provide the output as a single JSON list of strings, and nothing else."
-            response_str = await ollama_client.generate_text(prompt)
-            subject = random.choice(_extract_json_list(response_str))
+            try:
+                prompt = (
+                    f"Generate {settings.subjects_to_propose} creative and diverse subjects for an image. "
+                    "Your response MUST be a valid JSON list of strings, and nothing else. "
+                    'Example: ["a majestic lion", "a futuristic city at night", "a peaceful enchanted forest"]'
+                )
+                response_str = await ollama_client.generate_text(prompt)
+                subject = random.choice(_extract_json_list(response_str))
+            except Exception as e:
+                logger.warning(f"LLM subject generation failed: {e}. Using a fallback subject.")
+                subject = random.choice(DEFAULT_SUBJECTS)
         
         # 2. Determine Elements
         elements = args.elements
@@ -377,11 +392,10 @@ async def run_prompt_generator_task(
             allowed_style_names = [s.name for s in allowed_styles]
             prompt = f"Given the subject '{subject}', which of the following render styles is most appropriate? Styles: {allowed_style_names}. Respond with only the name of the style from the list, and nothing else."
             render_style_name = await ollama_client.generate_text(prompt)
-            render_style_name = render_style_name.strip().replace('"', '') # Clean LLM output
+            render_style_name = render_style_name.strip().replace('"', '')
         
         chosen_style = next((s for s in allowed_styles if s.name == render_style_name), None)
         if not chosen_style:
-            # Fallback if LLM hallucinates a style name
             logger.warning(f"LLM chose style '{render_style_name}' which is not in the allowed list. Picking a random allowed style.")
             chosen_style = random.choice(allowed_styles)
 
@@ -444,11 +458,12 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
         if desc_settings and desc_settings.ollama_instance_id and desc_settings.model_name:
             tools.append(DESCRIBE_IMAGE_TOOL_SCHEMA)
 
-        # Add Prompt Generator tool if it's configured
         allowed_styles = crud.get_allowed_styles_for_generator(db)
         if allowed_styles:
             tool_def = copy.deepcopy(PROMPT_GENERATOR_TOOL_SCHEMA)
+            # --- START OF FIX ---
             tool_def["inputSchema"]["properties"]["render_style"]["enum"] = [s.name for s in allowed_styles]
+            # --- END OF FIX ---
             tools.append(tool_def)
 
         return JsonRpcResponse(result={"tools": tools}, id=request_id)
@@ -459,13 +474,16 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             tool_name = params.name
             arguments = params.arguments
             
-            # --- Handle Non-Streaming Tools First ---
             if tool_name == "generate_prompt":
                 validated_args = GeneratePromptParams.model_validate(arguments)
                 result = await run_prompt_generator_task(validated_args, db)
-                return JsonRpcResponse(result=result.model_dump(), id=request_id)
+                formatted_text = (
+                    f"**Positive Prompt:**\n```\n{result.positive_prompt}\n```\n"
+                    f"**Negative Prompt:**\n```\n{result.negative_prompt}\n```"
+                )
+                result_content = {"content": [{"type": "text", "text": formatted_text}]}
+                return JsonRpcResponse(result=result_content, id=request_id)
 
-            # --- Handle Streaming Tools ---
             task_function = None
             validated_args = None
 
@@ -474,7 +492,7 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
                 task_function = run_generation_task
             elif tool_name == "upscale_image":
                 validated_args = UpscaleImageParams.model_validate(arguments)
-                task_function = run_generation_task # Reuses the same task runner
+                task_function = run_generation_task
             elif tool_name == "describe_image":
                 validated_args = DescribeImageParams.model_validate(arguments)
                 task_function = run_description_task

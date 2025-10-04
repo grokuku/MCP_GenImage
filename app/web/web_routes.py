@@ -45,6 +45,7 @@ async def test_generation_page(request: Request, db: Session = Depends(get_db)):
     render_types = crud.get_render_types(db)
     render_types_gen = [rt for rt in render_types if rt.generation_mode == 'image_generation']
     render_types_upscale = [rt for rt in render_types if rt.generation_mode == 'upscale']
+    prompt_generator_styles = crud.get_allowed_styles_for_generator(db)
 
     return templates.TemplateResponse(
         "test_generation.html",
@@ -54,6 +55,7 @@ async def test_generation_page(request: Request, db: Session = Depends(get_db)):
             "styles": styles,
             "render_types_gen": render_types_gen,
             "render_types_upscale": render_types_upscale,
+            "prompt_generator_styles": prompt_generator_styles,
             "active_page": "test_generation"
         }
     )

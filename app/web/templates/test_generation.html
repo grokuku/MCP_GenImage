@@ -183,7 +183,8 @@
                 <div class="form-group"><label for="prompt-gen-render-style">Render Style</label><select
                         id="prompt-gen-render-style">
                         <option value="">(Let LLM choose based on subject)</option>
-                        {% for style in styles %}{% if style.is_active %}<option value="{{ style.name }}">{{ style.name
+                        {% for style in prompt_generator_styles %}{% if style.is_active %}<option
+                            value="{{ style.name }}">{{ style.name
                             }}</option>{% endif %}{% endfor %}
                     </select></div>
                 <button type="button" id="prompt-gen-btn" class="btn btn-primary">Generate Prompt</button>
@@ -289,11 +290,18 @@
                 const data = await response.json();
 
                 if (data.error) { throw new Error(`[${data.error.code}] ${data.error.message}`); }
-                if (data.result) {
-                    const { positive_prompt, negative_prompt } = data.result;
-                    resultText.textContent = `Positive Prompt:\n\n${positive_prompt}\n\n---\n\nNegative Prompt:\n\n${negative_prompt}`;
-                    textResult.style.display = 'block';
-                } else { throw new Error('Invalid response from server.'); }
+
+                if (data.result && data.result.content && data.result.content.length > 0) {
+                    const content = data.result.content[0];
+                    if (content.type === 'text' && typeof content.text !== 'undefined') {
+                        resultText.textContent = content.text.replace(/\*\*/g, '').replace(/```/g, '');
+                        textResult.style.display = 'block';
+                    } else {
+                        throw new Error('Server returned an unexpected content type in the result.');
+                    }
+                } else {
+                    throw new Error('Invalid or empty result from server.');
+                }
             } catch (error) {
                 errorDisplay.textContent = 'Error: ' + error.message;
                 errorDisplay.style.display = 'block';
@@ -309,7 +317,7 @@
                     const msg = JSON.parse(event.data);
                     if (msg.method === 'stream/chunk') {
                         if (msg.params.result) {
-                            const content = msg.params.result.content[0];
+                            const content = msg.params.result.content;
                             if (content.type === 'image' && content.source) {
                                 resultImage.src = content.source;
                                 imageResult.style.display = 'block';
@@ -373,7 +381,7 @@
                 elements: elementsValue ? elementsValue.split(',').map(s => s.trim()).filter(Boolean) : [],
                 render_style: document.getElementById('prompt-gen-render-style').value || null,
             };
-            sendSyncMcpRequest({ jsonrpc: "2.0", method: "tools/call", params: { name: "generate_prompt", arguments: args }, id: "test-prompt-gen-" + Date.now() });
+            sendSyncMcpRequest({ jsonrpc: "2.o", method: "tools/call", params: { name: "generate_prompt", arguments: args }, id: "test-prompt-gen-" + Date.now() });
         });
     });
 </script>
