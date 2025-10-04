@@ -91,7 +91,9 @@ class OllamaClient:
             content = response_data.get("message", {}).get("content", "").strip()
 
             # Clean up potential markdown code blocks or quotes
-            if content.startswith("```") and content.endswith("```"):
+            if content.startswith("```json"):
+                content = content[7:-3].strip()
+            elif content.startswith("```"):
                 content = content[3:-3].strip()
             if content.startswith('"') and content.endswith('"'):
                 content = content[1:-1].strip()
@@ -111,6 +113,18 @@ class OllamaClient:
         except Exception as e:
             logger.error(f"An unexpected error occurred in the Ollama client: {e}")
             raise OllamaError("An unexpected error occurred while processing the Ollama response.") from e
+
+    async def generate_text(self, prompt: str) -> str:
+        """
+        Sends a simple text prompt to the LLM and gets a text response.
+        """
+        if not prompt:
+            return ""
+        
+        messages = [
+            {"role": "user", "content": prompt}
+        ]
+        return await self._generate(messages)
 
     async def enhance_positive_prompt(self, base_prompt: str, examples: Optional[str] = None) -> str:
         """

@@ -2,16 +2,42 @@
 
 {% block title %}{{ title }} - MCP GenImage{% endblock %}
 
-{% block head %}
-{{ super() }}
+{% block content %}
 <style>
-    .tab-container {
+    .main-tab-container {
+        display: flex;
+        border-bottom: 2px solid #555;
+        margin-bottom: 1em;
+    }
+
+    .main-tab {
+        padding: 0.8em 1.5em;
+        cursor: pointer;
+        font-size: 1.1em;
+        color: #aaa;
+    }
+
+    .main-tab.active {
+        border-bottom: 2px solid #007bff;
+        color: #fff;
+        font-weight: bold;
+    }
+
+    .main-tab-content {
+        display: none;
+    }
+
+    .main-tab-content.active {
+        display: block;
+    }
+
+    .sub-tab-container {
         display: flex;
         border-bottom: 1px solid #444;
         margin-bottom: 1.5em;
     }
 
-    .tab {
+    .sub-tab {
         padding: 0.8em 1.2em;
         cursor: pointer;
         border: 1px solid transparent;
@@ -20,105 +46,149 @@
         background-color: #2a2a2a;
     }
 
-    .tab.active {
-        background-color: #3c3c3c;
+    .sub-tab.active {
+        background-color: #1e1e1e;
         border-color: #444;
-        border-bottom: 1px solid #3c3c3c;
+        border-bottom: 1px solid #1e1e1e;
         border-radius: 4px 4px 0 0;
         font-weight: bold;
     }
 
-    .tab-content {
+    .sub-tab-content {
         display: none;
     }
 
-    .tab-content.active {
+    .sub-tab-content.active {
         display: block;
     }
-</style>
-{% endblock %}
 
-{% block content %}
+    /* Minor style adjustment for better grouping */
+    .container {
+        background-color: #1e1e1e;
+        padding: 2em;
+        border-radius: 8px;
+    }
+</style>
+
 <div class="container">
     <h1>{{ title }}</h1>
     <p>Use this interface to test the available MCP tools.</p>
 
-    <div class="tab-container">
-        <div class="tab active" data-tab="generate">Generate Image</div>
-        <div class="tab" data-tab="upscale">Upscale Image</div>
-        <div class="tab" data-tab="describe">Describe Image</div>
+    <!-- Main Tab Navigation -->
+    <div class="main-tab-container">
+        <div class="main-tab active" data-main-tab="image-tools">Image Tools</div>
+        <div class="main-tab" data-main-tab="helper-tools">Helper Tools</div>
     </div>
 
-    <!-- Generate Image Tab Content -->
-    <div id="tab-generate" class="tab-content active">
-        <form id="gen-form">
-            <div class="form-group"><label for="gen-prompt">Positive Prompt</label><textarea id="gen-prompt" rows="4"
-                    required
-                    placeholder="e.g., a majestic cat sitting on a throne, fantasy art">A cute robot reading a book in a cozy library</textarea>
-            </div>
-            <div class="form-group"><label for="gen-negative-prompt">Negative Prompt</label><textarea
-                    id="gen-negative-prompt" rows="2" placeholder="e.g., blurry, ugly, watermark"></textarea></div>
-            <div class="form-group"><label for="gen-style-names">Styles (Ctrl+Click to select multiple)</label><select
-                    id="gen-style-names" multiple size="6">
-                    {% for group in styles|groupby('category') %}<optgroup label="{{ group.grouper }}">
-                        {% for style in group.list %}<option value="{{ style.name }}">{{ style.name }}</option>{% endfor
-                        %}
-                    </optgroup>{% endfor %}
-                </select></div>
-            <div class="form-group"><label for="gen-render-type">Render Type</label><select id="gen-render-type">
-                    <option value="">(Default for Generation)</option>
-                    {% for rt in render_types_gen %}<option value="{{ rt.name }}">{{ rt.name }}</option>{% endfor %}
-                </select></div>
-            <div class="form-group"><label for="gen-aspect-ratio">Aspect Ratio</label><select id="gen-aspect-ratio">
-                    <option value="1:1" selected>1:1 (Square)</option>
-                    <option value="16:9">16:9 (Widescreen)</option>
-                    <option value="9:16">9:16 (Portrait)</option>
-                </select></div>
-            <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="gen-enhance-prompt"
-                        checked> Enhance with LLM</label></div>
-            <div class="form-group"><label for="gen-seed">Seed (Optional)</label><input type="number" id="gen-seed"
-                    placeholder="Leave blank for random"></div>
-            <button type="button" id="gen-btn" class="btn btn-primary">Generate Image</button>
-        </form>
+    <!-- Main Tab Content: Image Tools -->
+    <div id="main-tab-image-tools" class="main-tab-content active">
+        <div class="sub-tab-container">
+            <div class="sub-tab active" data-sub-tab="generate">Generate Image</div>
+            <div class="sub-tab" data-sub-tab="upscale">Upscale Image</div>
+            <div class="sub-tab" data-sub-tab="describe">Describe Image</div>
+        </div>
+
+        <!-- Sub-Tab Content: Generate Image -->
+        <div id="sub-tab-generate" class="sub-tab-content active">
+            <form id="gen-form">
+                <div class="form-group"><label for="gen-prompt">Positive Prompt</label><textarea id="gen-prompt"
+                        rows="4" required
+                        placeholder="e.g., a majestic cat sitting on a throne, fantasy art">A cute robot reading a book in a cozy library</textarea>
+                </div>
+                <div class="form-group"><label for="gen-negative-prompt">Negative Prompt</label><textarea
+                        id="gen-negative-prompt" rows="2" placeholder="e.g., blurry, ugly, watermark"></textarea></div>
+                <div class="form-group"><label for="gen-style-names">Styles (Ctrl+Click to select
+                        multiple)</label><select id="gen-style-names" multiple size="6">
+                        {% for group in styles|groupby('category') %}<optgroup label="{{ group.grouper }}">
+                            {% for style in group.list %}<option value="{{ style.name }}">{{ style.name }}</option>{%
+                            endfor %}
+                        </optgroup>{% endfor %}
+                    </select></div>
+                <div class="form-group"><label for="gen-render-type">Render Type</label><select id="gen-render-type">
+                        <option value="">(Default for Generation)</option>
+                        {% for rt in render_types_gen %}<option value="{{ rt.name }}">{{ rt.name }}</option>{% endfor %}
+                    </select></div>
+                <div class="form-group"><label for="gen-aspect-ratio">Aspect Ratio</label><select id="gen-aspect-ratio">
+                        <option value="1:1" selected>1:1 (Square)</option>
+                        <option value="16:9">16:9 (Widescreen)</option>
+                        <option value="9:16">9:16 (Portrait)</option>
+                    </select></div>
+                <div class="form-group"><label class="checkbox-label"><input type="checkbox" id="gen-enhance-prompt"
+                            checked> Enhance with LLM</label></div>
+                <div class="form-group"><label for="gen-seed">Seed (Optional)</label><input type="number" id="gen-seed"
+                        placeholder="Leave blank for random"></div>
+                <button type="button" id="gen-btn" class="btn btn-primary">Generate Image</button>
+            </form>
+        </div>
+
+        <!-- Sub-Tab Content: Upscale Image -->
+        <div id="sub-tab-upscale" class="sub-tab-content">
+            <form id="upscale-form">
+                <div class="form-group"><label for="upscale-input-url">Input Image URL</label><input type="url"
+                        id="upscale-input-url" required placeholder="https://example.com/image.png"></div>
+                <div class="form-group"><label for="upscale-render-type">Upscale Render Type</label><select
+                        id="upscale-render-type">
+                        <option value="">(Default for Upscale)</option>
+                        {% for rt in render_types_upscale %}<option value="{{ rt.name }}">{{ rt.name }}</option>{%
+                        endfor %}
+                    </select></div>
+                <div class="form-group"><label for="upscale-prompt">Guiding Prompt (Optional)</label><textarea
+                        id="upscale-prompt" rows="2" placeholder="e.g., highly detailed, 4k, photorealistic"></textarea>
+                </div>
+                <div class="form-group"><label for="upscale-denoise">Denoise (Optional)</label><input type="number"
+                        id="upscale-denoise" step="0.01" min="0" max="1"
+                        placeholder="e.g., 0.2 (leave blank for default)"></div>
+                <div class="form-group"><label for="upscale-seed">Seed (Optional)</label><input type="number"
+                        id="upscale-seed" placeholder="Leave blank for random"></div>
+                <button type="button" id="upscale-btn" class="btn btn-primary">Upscale Image</button>
+            </form>
+        </div>
+
+        <!-- Sub-Tab Content: Describe Image -->
+        <div id="sub-tab-describe" class="sub-tab-content">
+            <form id="describe-form">
+                <div class="form-group"><label for="describe-input-url">Input Image URL</label><input type="url"
+                        id="describe-input-url" required placeholder="https://example.com/image.png"></div>
+                <div class="form-group"><label for="describe-type">Description Type</label><select id="describe-type">
+                        <option value="optimized" selected>Optimized Prompt</option>
+                        <option value="natural">Natural Description</option>
+                    </select></div>
+                <div class="form-group"><label for="describe-language">Language</label><select id="describe-language">
+                        <option value="en" selected>English</option>
+                        <option value="fr">French</option>
+                    </select></div>
+                <button type="button" id="describe-btn" class="btn btn-primary">Describe Image</button>
+            </form>
+        </div>
     </div>
 
-    <!-- Upscale Image Tab Content -->
-    <div id="tab-upscale" class="tab-content">
-        <form id="upscale-form">
-            <div class="form-group"><label for="upscale-input-url">Input Image URL</label><input type="url"
-                    id="upscale-input-url" required placeholder="https://example.com/image.png"></div>
-            <div class="form-group"><label for="upscale-render-type">Upscale Render Type</label><select
-                    id="upscale-render-type">
-                    <option value="">(Default for Upscale)</option>
-                    {% for rt in render_types_upscale %}<option value="{{ rt.name }}">{{ rt.name }}</option>{% endfor %}
-                </select></div>
-            <div class="form-group"><label for="upscale-prompt">Guiding Prompt (Optional)</label><textarea
-                    id="upscale-prompt" rows="2" placeholder="e.g., highly detailed, 4k, photorealistic"></textarea>
-            </div>
-            <div class="form-group"><label for="upscale-denoise">Denoise (Optional)</label><input type="number"
-                    id="upscale-denoise" step="0.01" min="0" max="1" placeholder="e.g., 0.2 (leave blank for default)">
-            </div>
-            <div class="form-group"><label for="upscale-seed">Seed (Optional)</label><input type="number"
-                    id="upscale-seed" placeholder="Leave blank for random"></div>
-            <button type="button" id="upscale-btn" class="btn btn-primary">Upscale Image</button>
-        </form>
-    </div>
+    <!-- Main Tab Content: Helper Tools -->
+    <div id="main-tab-helper-tools" class="main-tab-content">
+        <div class="sub-tab-container">
+            <div class="sub-tab active" data-sub-tab="prompt-generator">Prompt Generator</div>
+        </div>
 
-    <!-- Describe Image Tab Content -->
-    <div id="tab-describe" class="tab-content">
-        <form id="describe-form">
-            <div class="form-group"><label for="describe-input-url">Input Image URL</label><input type="url"
-                    id="describe-input-url" required placeholder="https://example.com/image.png"></div>
-            <div class="form-group"><label for="describe-type">Description Type</label><select id="describe-type">
-                    <option value="optimized" selected>Optimized Prompt</option>
-                    <option value="natural">Natural Description</option>
-                </select></div>
-            <div class="form-group"><label for="describe-language">Language</label><select id="describe-language">
-                    <option value="en" selected>English</option>
-                    <option value="fr">French</option>
-                </select></div>
-            <button type="button" id="describe-btn" class="btn btn-primary">Describe Image</button>
-        </form>
+        <!-- Sub-Tab Content: Prompt Generator -->
+        <div id="sub-tab-prompt-generator" class="sub-tab-content active">
+            <form id="prompt-gen-form">
+                <p>Generate a creative prompt using an LLM. All fields are optional.</p>
+                <div class="form-group"><label for="prompt-gen-subject">Subject</label><textarea id="prompt-gen-subject"
+                        rows="2"
+                        placeholder="e.g., A knight fighting a dragon. Leave blank for a random subject."></textarea>
+                </div>
+                <div class="form-group"><label for="prompt-gen-elements">Contextual Elements</label><textarea
+                        id="prompt-gen-elements" rows="2"
+                        placeholder="e.g., lighting, background, mood. Comma-separated. Leave blank for random elements."></textarea>
+                </div>
+                <div class="form-group"><label for="prompt-gen-render-style">Render Style</label><select
+                        id="prompt-gen-render-style">
+                        <option value="">(Let LLM choose based on subject)</option>
+                        {% for style in styles %}{% if style.is_active %}<option value="{{ style.name }}">{{ style.name
+                            }}</option>{% endif %}{% endfor %}
+                    </select></div>
+                <button type="button" id="prompt-gen-btn" class="btn btn-primary">Generate Prompt</button>
+            </form>
+        </div>
     </div>
 
     <!-- Shared Result Display -->
@@ -144,16 +214,22 @@
 <script>
     document.addEventListener('DOMContentLoaded', () => {
         // --- Tab Management ---
-        const tabs = document.querySelectorAll('.tab');
-        const tabContents = document.querySelectorAll('.tab-content');
-        tabs.forEach(tab => {
-            tab.addEventListener('click', () => {
-                tabs.forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                tabContents.forEach(c => c.classList.remove('active'));
-                document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+        function setupTabNavigation(containerSelector, tabSelector, contentSelectorPrefix) {
+            const tabs = document.querySelectorAll(`${containerSelector} ${tabSelector}`);
+            tabs.forEach(tab => {
+                tab.addEventListener('click', () => {
+                    const parentContainer = tab.closest(containerSelector);
+                    parentContainer.querySelectorAll(tabSelector).forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+
+                    const contentContainer = tab.closest('.main-tab-content') || document;
+                    contentContainer.querySelectorAll(`[id^=${contentSelectorPrefix}]`).forEach(c => c.classList.remove('active'));
+                    document.getElementById(`${contentSelectorPrefix}${tab.dataset.subTab || tab.dataset.mainTab}`).classList.add('active');
+                });
             });
-        });
+        }
+        setupTabNavigation('.main-tab-container', '.main-tab', 'main-tab-');
+        setupTabNavigation('.sub-tab-container', '.sub-tab', 'sub-tab-');
 
         // --- Shared Result Display Elements ---
         const resultContainer = document.getElementById('result-container');
@@ -168,6 +244,7 @@
         const generateBtn = document.getElementById('gen-btn');
         const upscaleBtn = document.getElementById('upscale-btn');
         const describeBtn = document.getElementById('describe-btn');
+        const promptGenBtn = document.getElementById('prompt-gen-btn');
 
         // --- Helper Functions ---
         function setLoadingState(isLoading) {
@@ -175,6 +252,7 @@
             generateBtn.disabled = isLoading;
             upscaleBtn.disabled = isLoading;
             describeBtn.disabled = isLoading;
+            promptGenBtn.disabled = isLoading;
         }
 
         function resetResultDisplays() {
@@ -186,30 +264,40 @@
             resultText.textContent = '';
         }
 
-        async function sendMcpRequest(payload) {
+        async function sendStreamingMcpRequest(payload) {
             resetResultDisplays();
             setLoadingState(true);
             try {
-                const response = await fetch('/mcp', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
+                const response = await fetch('/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 const data = await response.json();
 
-                if (data.error) {
-                    throw new Error(`[${data.error.code}] ${data.error.message}`);
-                }
-
-                if (data.method === 'stream/start' && data.params.ws_url) {
-                    await handleWebSocket(data.params.ws_url);
-                } else {
-                    throw new Error('Server did not respond with a stream/start message.');
-                }
-
+                if (data.error) { throw new Error(`[${data.error.code}] ${data.error.message}`); }
+                if (data.method === 'stream/start' && data.params.ws_url) { await handleWebSocket(data.params.ws_url); }
+                else { throw new Error('Server did not respond with a stream/start message.'); }
             } catch (error) {
                 errorDisplay.textContent = 'Error: ' + error.message;
                 errorDisplay.style.display = 'block';
+                setLoadingState(false);
+            }
+        }
+
+        async function sendSyncMcpRequest(payload) {
+            resetResultDisplays();
+            setLoadingState(true);
+            try {
+                const response = await fetch('/mcp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const data = await response.json();
+
+                if (data.error) { throw new Error(`[${data.error.code}] ${data.error.message}`); }
+                if (data.result) {
+                    const { positive_prompt, negative_prompt } = data.result;
+                    resultText.textContent = `Positive Prompt:\n\n${positive_prompt}\n\n---\n\nNegative Prompt:\n\n${negative_prompt}`;
+                    textResult.style.display = 'block';
+                } else { throw new Error('Invalid response from server.'); }
+            } catch (error) {
+                errorDisplay.textContent = 'Error: ' + error.message;
+                errorDisplay.style.display = 'block';
+            } finally {
                 setLoadingState(false);
             }
         }
@@ -232,20 +320,13 @@
                         } else if (msg.params.error) {
                             throw new Error(`[${msg.params.error.code}] ${msg.params.error.message}`);
                         }
-                    } else if (msg.method === 'stream/end') {
-                        ws.close();
-                    }
+                    } else if (msg.method === 'stream/end') { ws.close(); }
                 };
-                ws.onclose = () => {
-                    setLoadingState(false);
-                    resolve();
-                };
+                ws.onclose = () => { setLoadingState(false); resolve(); };
                 ws.onerror = (event) => {
                     const error = new Error('WebSocket connection failed.');
-                    errorDisplay.textContent = 'Error: ' + error.message;
-                    errorDisplay.style.display = 'block';
-                    setLoadingState(false);
-                    reject(error);
+                    errorDisplay.textContent = 'Error: ' + error.message; errorDisplay.style.display = 'block';
+                    setLoadingState(false); reject(error);
                 };
             });
         }
@@ -262,12 +343,7 @@
                 render_type: document.getElementById('gen-render-type').value || null,
                 seed: parseInt(document.getElementById('gen-seed').value) || null,
             };
-            const payload = {
-                jsonrpc: "2.0", method: "tools/call",
-                params: { name: "generate_image", arguments: args },
-                id: "test-gen-" + Date.now()
-            };
-            sendMcpRequest(payload);
+            sendStreamingMcpRequest({ jsonrpc: "2.0", method: "tools/call", params: { name: "generate_image", arguments: args }, id: "test-gen-" + Date.now() });
         });
 
         upscaleBtn.addEventListener('click', () => {
@@ -278,12 +354,7 @@
                 render_type: document.getElementById('upscale-render-type').value || null,
                 seed: parseInt(document.getElementById('upscale-seed').value) || null,
             };
-            const payload = {
-                jsonrpc: "2.0", method: "tools/call",
-                params: { name: "upscale_image", arguments: args },
-                id: "test-upscale-" + Date.now()
-            };
-            sendMcpRequest(payload);
+            sendStreamingMcpRequest({ jsonrpc: "2.0", method: "tools/call", params: { name: "upscale_image", arguments: args }, id: "test-upscale-" + Date.now() });
         });
 
         describeBtn.addEventListener('click', () => {
@@ -292,12 +363,17 @@
                 description_type: document.getElementById('describe-type').value,
                 language: document.getElementById('describe-language').value,
             };
-            const payload = {
-                jsonrpc: "2.0", method: "tools/call",
-                params: { name: "describe_image", arguments: args },
-                id: "test-describe-" + Date.now()
+            sendStreamingMcpRequest({ jsonrpc: "2.0", method: "tools/call", params: { name: "describe_image", arguments: args }, id: "test-describe-" + Date.now() });
+        });
+
+        promptGenBtn.addEventListener('click', () => {
+            const elementsValue = document.getElementById('prompt-gen-elements').value;
+            const args = {
+                subject: document.getElementById('prompt-gen-subject').value || null,
+                elements: elementsValue ? elementsValue.split(',').map(s => s.trim()).filter(Boolean) : [],
+                render_style: document.getElementById('prompt-gen-render-style').value || null,
             };
-            sendMcpRequest(payload);
+            sendSyncMcpRequest({ jsonrpc: "2.0", method: "tools/call", params: { name: "generate_prompt", arguments: args }, id: "test-prompt-gen-" + Date.now() });
         });
     });
 </script>

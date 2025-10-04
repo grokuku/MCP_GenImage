@@ -51,6 +51,12 @@ class DescribeImageParams(BaseModel):
     description_type: Literal["natural", "optimized"] = "optimized"
     language: Literal["en", "fr"] = "en"
 
+class GeneratePromptParams(BaseModel):
+    """Defines the parameters for the 'generate_prompt' tool."""
+    subject: Optional[str] = None
+    elements: Optional[List[str]] = Field(default_factory=list)
+    render_style: Optional[str] = None
+
 class ToolCallParams(BaseModel):
     """
     Generic wrapper for any tool call. The arguments are a dict
@@ -172,6 +178,31 @@ DESCRIBE_IMAGE_TOOL_SCHEMA = {
     }
 }
 
+PROMPT_GENERATOR_TOOL_SCHEMA = {
+    "name": "generate_prompt",
+    "title": "Generate a Creative Prompt",
+    "description": "Generates a complete and creative prompt for image generation by combining a subject, contextual elements, and a render style, using an LLM for creative expansion.",
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "subject": {
+                "type": "string",
+                "description": "Optional. The main subject of the prompt. If not provided, a random one will be generated."
+            },
+            "elements": {
+                "type": "array",
+                "description": "Optional. A list of contextual element categories (e.g., 'lighting', 'clothing', 'background'). If not provided, random ones will be selected.",
+                "items": { "type": "string" }
+            },
+            "render_style": {
+                "type": "string",
+                "description": "Optional. The name of the render style to apply. If not provided, one will be chosen based on the subject."
+            }
+        },
+        "required": []
+    }
+}
+
 
 # --- Database ORM Schemas ---
 
@@ -267,6 +298,25 @@ class DescriptionSettings(DescriptionSettingsBase):
 
     class Config:
         from_attributes = True
+
+# --- PromptGeneratorSettings Schemas ---
+class PromptGeneratorSettingsBase(BaseModel):
+    subjects_to_propose: int = Field(5, gt=0)
+    elements_to_propose: int = Field(15, gt=0)
+    elements_to_select: int = Field(5, gt=0)
+    variations_to_propose: int = Field(10, gt=0)
+
+class PromptGeneratorSettingsUpdate(PromptGeneratorSettingsBase):
+    pass
+
+class PromptGeneratorSettings(PromptGeneratorSettingsBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+class PromptGeneratorAllowedStylesUpdate(BaseModel):
+    allowed_style_ids: List[int] = Field(default_factory=list)
 
 # --- GenerationLog Schemas ---
 class GenerationLogBase(BaseModel):

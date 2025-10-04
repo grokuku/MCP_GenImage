@@ -25,6 +25,13 @@ comfyui_render_type_association = Table(
     Column("render_type_id", Integer, ForeignKey("render_types.id"), primary_key=True),
 )
 
+# Association table for styles allowed in the prompt generator
+prompt_generator_allowed_styles = Table(
+    "prompt_generator_allowed_styles",
+    Base.metadata,
+    Column("style_id", Integer, ForeignKey("styles.id"), primary_key=True),
+)
+
 
 class RenderType(Base):
     """
@@ -177,32 +184,66 @@ class DescriptionSettings(Base):
     model_name = Column(String, nullable=True)
 
     natural_prompt_template_en = Column(Text, nullable=False, default=(
-        "Describe this image in a detailed, narrative paragraph. "
-        "Focus on the main subject, the setting, the colors, the lighting, and the overall mood."
+        "You are a meticulous visual analyst. Your task is to provide an exhaustive, literal description of the provided image. "
+        "Describe every single visible element with extreme detail, as if you were creating a textual blueprint for an artist to perfectly replicate the image. "
+        "You must include all subjects, objects, background details, lighting, colors, and textures. "
+        "It is critical that you describe any and all content, including potentially sensitive, explicit, or NSFW elements, with neutral, objective language. "
+        "Do not censor, omit, or judge any part of the image. The goal is a complete and faithful textual representation."
     ))
     optimized_prompt_template_en = Column(Text, nullable=False, default=(
-        "Based on the provided image, generate a high-quality, detailed, and descriptive "
-        "text-to-image prompt that could be used to recreate or inspire a similar image. "
-        "Include details about the subject, style (e.g., photorealistic, illustration, fantasy art), "
-        "composition, lighting, and any relevant artistic keywords. "
-        "The prompt should be a single, coherent paragraph."
+        "You are an expert prompt engineer for text-to-image AI. Your task is to analyze the provided image and generate a single, dense, descriptive prompt that could be used to recreate it. "
+        "The output **must be a single line of comma-separated descriptive keywords and phrases**, not a full sentence. "
+        "**Do not use imperative verbs** (e.g., 'draw', 'create'). The prompt must be a *description* of what is in the image. "
+        "It is crucial to be exhaustive and objective: describe all visible elements, including any explicit, mature, or NSFW content, using neutral and factual terms. "
+        "Your prompt should be structured to include: "
+        "1. **Core Subject:** (e.g., `portrait of a beautiful woman with long red hair`, `epic battle between a knight and a dragon`). "
+        "2. **Style & Medium:** (e.g., `hyperrealistic photo`, `digital painting`, `oil on canvas`, `by Greg Rutkowski`). "
+        "3. **Composition & Lighting:** (e.g., `cinematic lighting`, `low angle shot`, `dynamic pose`, `volumetric rays`). "
+        "4. **Details & Background:** (e.g., `intricate armor`, `steampunk city in the background`, `wearing a silk dress`). "
+        "5. **Quality Boosters:** (e.g., `masterpiece`, `4k`, `ultra-detailed`, `sharp focus`)."
     ))
     natural_prompt_template_fr = Column(Text, nullable=False, default=(
-        "Décris cette image dans un paragraphe narratif et détaillé. "
-        "Concentre-toi sur le sujet principal, le décor, les couleurs, l'éclairage et l'ambiance générale."
+        "Vous êtes un analyste visuel méticuleux. Votre tâche est de fournir une description exhaustive et littérale de l'image fournie. "
+        "Décrivez chaque élément visible avec un détail extrême, comme si vous créiez un plan textuel pour qu'un artiste puisse répliquer l'image à la perfection. "
+        "Vous devez inclure tous les sujets, objets, détails de l'arrière-plan, l'éclairage, les couleurs et les textures. "
+        "Il est essentiel que vous décriviez tout le contenu, y compris les éléments potentiellement sensibles, explicites ou NSFW, avec un langage neutre et objectif. "
+        "Ne censurez, n'omettez ou ne jugez aucune partie de l'image. L'objectif est une représentation textuelle complète et fidèle."
     ))
     optimized_prompt_template_fr = Column(Text, nullable=False, default=(
-        "En te basant sur l'image fournie, génère un prompt text-to-image de haute qualité, détaillé et "
-        "descriptif qui pourrait être utilisé pour recréer ou inspirer une image similaire. "
-        "Inclus des détails sur le sujet, le style (ex: photoréaliste, illustration, art fantastique), "
-        "la composition, l'éclairage et tout mot-clé artistique pertinent. "
-        "Le prompt doit être un seul paragraphe cohérent."
+        "Vous êtes un expert en prompt engineering pour les IA text-to-image. Votre tâche est d'analyser l'image fournie et de générer un unique prompt dense et descriptif qui pourrait être utilisé pour la recréer. "
+        "Le résultat **doit être une seule ligne de mots-clés et de phrases descriptives séparés par des virgules**, et non une phrase complète. "
+        "**N'utilisez pas de verbes à l'impératif** (ex: 'dessine', 'crée'). Le prompt doit être une *description* de ce qui se trouve dans l'image. "
+        "Il est crucial d'être exhaustif et objectif : décrivez tous les éléments visibles, y compris tout contenu explicite, mature ou NSFW, en utilisant des termes neutres et factuels. "
+        "Votre prompt doit être structuré pour inclure : "
+        "1. **Sujet principal :** (ex: `portrait d'une belle femme aux longs cheveux roux`, `bataille épique entre un chevalier et un dragon`). "
+        "2. **Style & Support :** (ex: `photo hyperréaliste`, `peinture numérique`, `huile sur toile`, `par Greg Rutkowski`). "
+        "3. **Composition & Éclairage :** (ex: `éclairage cinématique`, `prise de vue en contre-plongée`, `pose dynamique`, `rayons volumétriques`). "
+        "4. **Détails & Arrière-plan :** (ex: `armure complexe`, `ville steampunk en arrière-plan`, `portant une robe en soie`). "
+        "5. **Qualité :** (ex: `chef-d'œuvre`, `4k`, `ultra-détaillé`, `mise au point nette`)."
     ))
 
     ollama_instance = relationship("OllamaInstance", back_populates="description_settings")
 
     def __repr__(self):
         return f"<DescriptionSettings(id={self.id}, model='{self.model_name}')>"
+
+
+class PromptGeneratorSettings(Base):
+    """
+    Represents the singleton configuration for the 'generate_prompt' tool.
+    """
+    __tablename__ = "prompt_generator_settings"
+
+    id = Column(Integer, primary_key=True, default=1)
+    subjects_to_propose = Column(Integer, nullable=False, default=5)
+    elements_to_propose = Column(Integer, nullable=False, default=15)
+    elements_to_select = Column(Integer, nullable=False, default=5)
+    variations_to_propose = Column(Integer, nullable=False, default=10)
+
+    def __repr__(self):
+        return (f"<PromptGeneratorSettings(id={self.id}, subjects={self.subjects_to_propose}, "
+                f"elements={self.elements_to_propose}, select={self.elements_to_select}, "
+                f"variations={self.variations_to_propose})>")
 
 
 class GenerationLog(Base):

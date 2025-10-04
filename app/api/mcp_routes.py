@@ -18,8 +18,9 @@ import base64
 
 from ..schemas import (
     JsonRpcRequest, JsonRpcResponse, JsonRpcError, ToolCallParams,
-    GenerateImageParams, UpscaleImageParams, DescribeImageParams,
+    GenerateImageParams, UpscaleImageParams, DescribeImageParams, GeneratePromptParams,
     GENERATE_IMAGE_TOOL_SCHEMA, UPSCALE_IMAGE_TOOL_SCHEMA, DESCRIBE_IMAGE_TOOL_SCHEMA,
+    PROMPT_GENERATOR_TOOL_SCHEMA,
     JsonRpcId, GenerationLogCreate
 )
 from ..services.comfyui_client import ComfyUIClient, ComfyUIError, ComfyUIConnectionError
@@ -27,7 +28,7 @@ from ..services.ollama_client import OllamaClient, OllamaError
 from ..database.session import get_db, SessionLocal
 from ..database import crud
 from ..config import settings
-from ..database.models import ComfyUIInstance
+from ..database.models import ComfyUIInstance, Style
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -313,6 +314,96 @@ async def run_description_task(
         manager.disconnect(stream_id)
         db.close()
 
+
+def _extract_json_list(text: str) -> List[Any]:
+    """Robustly extracts a JSON list from a string that may contain other text."""
+    try:
+        # Find the first '[' and the last ']'
+        start_index = text.find('[')
+        end_index = text.rfind(']')
+        if start_index != -1 and end_index != -1 and end_index > start_index:
+            json_str = text[start_index:end_index+1]
+            return json.loads(json_str)
+        else:
+            raise ValueError("No JSON list found in the text.")
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Failed to decode or extract JSON from LLM response: {text}")
+        raise ValueError(f"LLM returned malformed data that could not be parsed as a list.") from e
+
+
+class GeneratePromptResult(BaseModel):
+    positive_prompt: str
+    negative_prompt: str
+
+async def run_prompt_generator_task(
+    args: GeneratePromptParams, db: Session
+) -> GeneratePromptResult:
+    """Executes the complete workflow for the 'generate_prompt' tool."""
+    # 0. Get Configuration
+    settings = crud.get_prompt_generator_settings(db)
+    allowed_styles = crud.get_allowed_styles_for_generator(db)
+    if not allowed_styles:
+        raise ValueError("Prompt Generator tool is not configured: no allowed styles.")
+
+    all_db_settings = crud.get_all_settings(db)
+    instance_id_str = all_db_settings.get("PROMPT_ENHANCEMENT_OLLAMA_INSTANCE_ID")
+    model_name = all_db_settings.get("PROMPT_ENHANCEMENT_MODEL_NAME")
+    if not instance_id_str or not model_name:
+        raise ValueError("Prompt Generator requires a configured Prompt Enhancement LLM in General Settings.")
+    
+    instance_id = int(instance_id_str)
+    instance = crud.get_ollama_instance_by_id(db, instance_id)
+    if not instance or not instance.is_active:
+        raise ValueError("The configured Prompt Enhancement LLM is inactive or not found.")
+
+    async with OllamaClient(api_url=instance.base_url, model_name=model_name) as ollama_client:
+        # 1. Determine Subject
+        subject = args.subject
+        if not subject:
+            prompt = f"Generate {settings.subjects_to_propose} creative and diverse subjects for an image. Provide the output as a single JSON list of strings, and nothing else."
+            response_str = await ollama_client.generate_text(prompt)
+            subject = random.choice(_extract_json_list(response_str))
+        
+        # 2. Determine Elements
+        elements = args.elements
+        if not elements:
+            prompt = f"Generate {settings.elements_to_propose} generic categories for describing an image (e.g., 'lighting', 'clothing', 'background', 'mood', 'setting'). Provide the output as a single JSON list of strings, and nothing else."
+            response_str = await ollama_client.generate_text(prompt)
+            elements = random.sample(_extract_json_list(response_str), settings.elements_to_select)
+
+        # 3. Determine Render Style
+        render_style_name = args.render_style
+        if not render_style_name:
+            allowed_style_names = [s.name for s in allowed_styles]
+            prompt = f"Given the subject '{subject}', which of the following render styles is most appropriate? Styles: {allowed_style_names}. Respond with only the name of the style from the list, and nothing else."
+            render_style_name = await ollama_client.generate_text(prompt)
+            render_style_name = render_style_name.strip().replace('"', '') # Clean LLM output
+        
+        chosen_style = next((s for s in allowed_styles if s.name == render_style_name), None)
+        if not chosen_style:
+            # Fallback if LLM hallucinates a style name
+            logger.warning(f"LLM chose style '{render_style_name}' which is not in the allowed list. Picking a random allowed style.")
+            chosen_style = random.choice(allowed_styles)
+
+        # 4. Iterative Refinement
+        context = [subject]
+        for element in elements:
+            prompt = f"Context: {', '.join(context)}. Generate {settings.variations_to_propose} specific variations for the element '{element}'. Provide the output as a single JSON list of strings, and nothing else."
+            response_str = await ollama_client.generate_text(prompt)
+            choice = random.choice(_extract_json_list(response_str))
+            context.append(choice)
+
+        # 5. Assemble and Enhance
+        base_prompt = ", ".join(context)
+        final_positive_prompt = ", ".join(filter(None, [base_prompt, chosen_style.prompt_template]))
+        final_negative_prompt = chosen_style.negative_prompt_template
+
+        enhanced_positive = await ollama_client.enhance_positive_prompt(final_positive_prompt)
+        enhanced_negative = await ollama_client.enhance_negative_prompt(final_negative_prompt, enhanced_positive)
+
+        return GeneratePromptResult(positive_prompt=enhanced_positive, negative_prompt=enhanced_negative)
+
+
 # --- MCP JSON-RPC Endpoint ---
 
 def create_error_response(request_id: JsonRpcId, code: int, message: str) -> JSONResponse:
@@ -353,6 +444,13 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
         if desc_settings and desc_settings.ollama_instance_id and desc_settings.model_name:
             tools.append(DESCRIBE_IMAGE_TOOL_SCHEMA)
 
+        # Add Prompt Generator tool if it's configured
+        allowed_styles = crud.get_allowed_styles_for_generator(db)
+        if allowed_styles:
+            tool_def = copy.deepcopy(PROMPT_GENERATOR_TOOL_SCHEMA)
+            tool_def["inputSchema"]["properties"]["render_style"]["enum"] = [s.name for s in allowed_styles]
+            tools.append(tool_def)
+
         return JsonRpcResponse(result={"tools": tools}, id=request_id)
 
     if rpc_request.method == "tools/call":
@@ -361,6 +459,13 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             tool_name = params.name
             arguments = params.arguments
             
+            # --- Handle Non-Streaming Tools First ---
+            if tool_name == "generate_prompt":
+                validated_args = GeneratePromptParams.model_validate(arguments)
+                result = await run_prompt_generator_task(validated_args, db)
+                return JsonRpcResponse(result=result.model_dump(), id=request_id)
+
+            # --- Handle Streaming Tools ---
             task_function = None
             validated_args = None
 

@@ -1,6 +1,6 @@
 # app/database/crud.py
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, text
 from typing import Optional, List, Literal
 
 from . import models
@@ -435,6 +435,89 @@ def update_description_settings(db: Session, settings_data: schemas.DescriptionS
     db.commit()
     db.refresh(db_settings)
     return db_settings
+
+
+# --- PromptGenerator CRUD Operations ---
+
+def get_prompt_generator_settings(db: Session) -> models.PromptGeneratorSettings:
+    """Retrieves the prompt generator settings, creating them with defaults if they don't exist."""
+    settings = db.query(models.PromptGeneratorSettings).first()
+    if not settings:
+        settings = models.PromptGeneratorSettings(
+            id=1,
+            subjects_to_propose=5,
+            elements_to_propose=15,
+            elements_to_select=5,
+            variations_to_propose=10,
+        )
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+def update_prompt_generator_settings(
+    db: Session,
+    settings_data: schemas.PromptGeneratorSettingsUpdate
+) -> models.PromptGeneratorSettings:
+    """Updates the numerical settings for the prompt generator."""
+    db_settings = get_prompt_generator_settings(db)
+
+    update_data = settings_data.model_dump(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(db_settings, key, value)
+    
+    db.commit()
+    db.refresh(db_settings)
+    return db_settings
+
+
+def get_prompt_generator_allowed_style_ids(db: Session) -> List[int]:
+    """Retrieves a list of IDs for all styles allowed by the prompt generator."""
+    results = db.query(
+        models.prompt_generator_allowed_styles.c.style_id
+    ).all()
+    return [r[0] for r in results]
+
+
+def update_prompt_generator_allowed_styles(
+    db: Session,
+    style_ids: List[int]
+) -> None:
+    """
+    Synchronizes the list of allowed styles in the association table.
+    Deletes existing entries and inserts the new ones.
+    """
+    # 1. Clear all existing allowed styles
+    db.execute(models.prompt_generator_allowed_styles.delete())
+
+    # 2. Prepare and insert new styles
+    if style_ids:
+        # Filter out IDs that do not correspond to an existing Style to prevent dangling FKs
+        existing_style_ids = [
+            r[0] for r in db.query(models.Style.id).filter(models.Style.id.in_(style_ids)).all()
+        ]
+        
+        insert_values = [{"style_id": style_id} for style_id in existing_style_ids]
+        
+        if insert_values:
+            # Use db.execute with the insert statement from the table object
+            db.execute(
+                models.prompt_generator_allowed_styles.insert(),
+                insert_values
+            )
+            
+    db.commit()
+
+
+def get_allowed_styles_for_generator(db: Session) -> List[models.Style]:
+    """Retrieves the full Style objects that are allowed for the prompt generator."""
+    allowed_ids = get_prompt_generator_allowed_style_ids(db)
+    
+    if not allowed_ids:
+        return []
+
+    return db.query(models.Style).filter(models.Style.id.in_(allowed_ids)).all()
 
 
 # --- GenerationLog CRUD Operations ---

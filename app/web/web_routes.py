@@ -465,6 +465,55 @@ async def handle_update_description_settings(
     return RedirectResponse(url="/settings/description", status_code=303)
 
 
+# --- Prompt Generator Settings Management ---
+
+@router.get("/settings/prompt-generator", response_class=HTMLResponse)
+async def manage_prompt_generator_settings(request: Request, db: Session = Depends(get_db)):
+    """
+    Displays the page for managing the prompt generator settings.
+    """
+    settings = crud.get_prompt_generator_settings(db)
+    all_styles = crud.get_styles(db)
+    allowed_style_ids = crud.get_prompt_generator_allowed_style_ids(db)
+    return templates.TemplateResponse(
+        "manage_prompt_generator.html",
+        {
+            "request": request,
+            "title": "Prompt Generator Settings",
+            "active_page": "prompt_generator_settings",
+            "settings": settings,
+            "all_styles": all_styles,
+            "allowed_style_ids": allowed_style_ids,
+        }
+    )
+
+@router.post("/settings/prompt-generator", response_class=RedirectResponse)
+async def handle_update_prompt_generator_settings(
+    db: Session = Depends(get_db),
+    subjects_to_propose: int = Form(...),
+    elements_to_propose: int = Form(...),
+    elements_to_select: int = Form(...),
+    variations_to_propose: int = Form(...),
+    allowed_style_ids: List[int] = Form([])
+):
+    """
+    Handles updating the prompt generator settings.
+    """
+    # Update numerical settings
+    numerical_settings = schemas.PromptGeneratorSettingsUpdate(
+        subjects_to_propose=subjects_to_propose,
+        elements_to_propose=elements_to_propose,
+        elements_to_select=elements_to_select,
+        variations_to_propose=variations_to_propose,
+    )
+    crud.update_prompt_generator_settings(db, settings_data=numerical_settings)
+
+    # Update allowed styles
+    crud.update_prompt_generator_allowed_styles(db, style_ids=allowed_style_ids)
+
+    return RedirectResponse(url="/settings/prompt-generator", status_code=303)
+
+
 # --- General Settings Management ---
 
 @router.get("/settings/general", response_class=HTMLResponse)

@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}Prompt Generator Settings - {{ super() }}{% endblock %}
+
+{% block content %}
+<h1>Prompt Generator Settings</h1>
+
+<div class="container">
+    <form action="/settings/prompt-generator" method="post">
+
+        <h2>Numerical Settings</h2>
+        <div class="form-section">
+            <div class="form-group">
+                <label for="subjects_to_propose">Subjects to Propose</label>
+                <input type="number" id="subjects_to_propose" name="subjects_to_propose"
+                    value="{{ settings.subjects_to_propose }}" min="1" required>
+                <small>Number of different subjects the LLM should propose when none is provided.</small>
+            </div>
+
+            <div class="form-group">
+                <label for="elements_to_propose">Generic Elements to Propose</label>
+                <input type="number" id="elements_to_propose" name="elements_to_propose"
+                    value="{{ settings.elements_to_propose }}" min="1" required>
+                <small>Number of generic element categories (e.g., 'lighting', 'background') the LLM should propose when
+                    none are provided.</small>
+            </div>
+
+            <div class="form-group">
+                <label for="elements_to_select">Elements to Select</label>
+                <input type="number" id="elements_to_select" name="elements_to_select"
+                    value="{{ settings.elements_to_select }}" min="1" required>
+                <small>How many of the proposed generic elements should be randomly selected for refinement.</small>
+            </div>
+
+            <div class="form-group">
+                <label for="variations_to_propose">Variations to Propose per Element</label>
+                <input type="number" id="variations_to_propose" name="variations_to_propose"
+                    value="{{ settings.variations_to_propose }}" min="1" required>
+                <small>For each selected element, how many specific variations the LLM should generate for the random
+                    choice.</small>
+            </div>
+        </div>
+
+        <h2 style="margin-top: 2em;">Allowed Render Styles</h2>
+        <div class="form-section">
+            <p>Select which existing styles can be used by the prompt generator. Only active styles are listed.</p>
+            {% for style in all_styles %}
+            {% if style.is_active %}
+            <div class="form-group" style="display: flex; align-items: center;">
+                <input type="checkbox" id="style_{{ style.id }}" name="allowed_style_ids" value="{{ style.id }}"
+                    {{ 'checked' if style.id in allowed_style_ids }}>
+                <label for="style_{{ style.id }}" style="margin-left: 10px; font-weight: normal;">
+                    {{ style.name }} <span style="color: #999;">({{ style.category }})</span>
+                </label>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
+
+        <div style="margin-top: 2em;">
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </div>
+
+    </form>
+</div>
+{% endblock %}
