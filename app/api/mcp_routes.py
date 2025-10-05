@@ -1,4 +1,3 @@
-#### Fichier: app/api/mcp_routes.py
 from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError, BaseModel
@@ -300,7 +299,7 @@ async def run_description_task(
 
         # --- Execute and Send Result ---
         async with OllamaClient(api_url=instance.base_url, model_name=desc_settings.model_name) as ollama_client:
-            description = await ollama_client.describe_image(prompt=prompt_template, image_base64=image_base64)
+            description = await ollama_client.describe_image(prompt=prompt_template, image_base_64=image_base64)
         
         await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": {"content": [{"type": "text", "text": description}]}}})
 
@@ -334,20 +333,55 @@ class GeneratePromptResult(BaseModel):
     positive_prompt: str
     negative_prompt: str
 
+async def _translate_to_english_if_needed(text: str, client: OllamaClient) -> str:
+    """Translates text to English if it's not already, using the LLM."""
+    if not text or not text.strip():
+        return text
+    try:
+        prompt = (
+            "Your task is to ensure the following text is in English. "
+            "If it is already in English, return it verbatim. "
+            "If it is in another language, translate it to English. "
+            "Respond with ONLY the resulting English text, without any quotes or explanations. "
+            f"Text: \"{text}\""
+        )
+        translated_text = await client.generate_text(prompt)
+        # Clean up potential LLM artifacts like quotes
+        return translated_text.strip().replace('"', '')
+    except Exception as e:
+        logger.warning(f"Could not translate text '{text}': {e}. Using original text.")
+        return text
+
 async def run_prompt_generator_task(
     args: GeneratePromptParams, db: Session
 ) -> GeneratePromptResult:
     """Executes the complete workflow for the 'generate_prompt' tool."""
-    DEFAULT_SUBJECTS = [
-        "a majestic dragon flying over a mountain range",
-        "a futuristic cityscape at night with flying vehicles",
-        "an enchanted forest with glowing mushrooms and mythical creatures",
-        "a lone astronaut discovering an alien artifact on a desolate planet",
-        "a steampunk-inspired inventor in their cluttered workshop"
+    # --- MODIFICATION START: Expanded subject themes ---
+    SUBJECT_THEMES = [
+        # Character Themes
+        "a dramatic close-up portrait of a character",
+        "a full body shot of a character in a dynamic action pose",
+        "an intimate scene focusing on a character's emotions",
+        "a character interacting with a fantastical creature",
+        "a character set against a vast, breathtaking landscape",
+        "a mysterious figure in a dark, moody environment",
+        "a sci-fi character with advanced technology",
+        "a fantasy hero preparing for battle",
+        # Landscape Themes
+        "an epic, panoramic view of a mountain range at sunrise",
+        "an enchanted forest with glowing flora and a mystical river",
+        "a desolate, alien desert under a sky with two moons",
+        "a storm-swept coastline with crashing waves against dramatic cliffs",
+        # Architecture Themes
+        "a sprawling, futuristic cityscape with flying vehicles and towering megastructures",
+        "the intricate, gothic interior of a grand cathedral with stained glass windows",
+        "the overgrown ruins of an ancient, forgotten temple in the jungle",
+        "a cozy, detailed cutaway of a hobbit-style burrow built into a hillside",
     ]
-
+    # --- MODIFICATION END ---
+    
     # 0. Get Configuration
-    settings = crud.get_prompt_generator_settings(db)
+    config = crud.get_prompt_generator_settings(db)
     allowed_styles = crud.get_allowed_styles_for_generator(db)
     if not allowed_styles:
         raise ValueError("Prompt Generator tool is not configured: no allowed styles.")
@@ -364,55 +398,96 @@ async def run_prompt_generator_task(
         raise ValueError("The configured Prompt Enhancement LLM is inactive or not found.")
 
     async with OllamaClient(api_url=instance.base_url, model_name=model_name) as ollama_client:
-        # 1. Determine Subject
-        subject = args.subject
-        if not subject:
-            try:
-                prompt = (
-                    f"Generate {settings.subjects_to_propose} creative and diverse subjects for an image. "
-                    "Your response MUST be a valid JSON list of strings, and nothing else. "
-                    'Example: ["a majestic lion", "a futuristic city at night", "a peaceful enchanted forest"]'
-                )
-                response_str = await ollama_client.generate_text(prompt)
-                subject = random.choice(_extract_json_list(response_str))
-            except Exception as e:
-                logger.warning(f"LLM subject generation failed: {e}. Using a fallback subject.")
-                subject = random.choice(DEFAULT_SUBJECTS)
         
-        # 2. Determine Elements
-        elements = args.elements
-        if not elements:
-            prompt = f"Generate {settings.elements_to_propose} generic categories for describing an image (e.g., 'lighting', 'clothing', 'background', 'mood', 'setting'). Provide the output as a single JSON list of strings, and nothing else."
-            response_str = await ollama_client.generate_text(prompt)
-            elements = random.sample(_extract_json_list(response_str), settings.elements_to_select)
-
-        # 3. Determine Render Style
-        render_style_name = args.render_style
-        if not render_style_name:
-            allowed_style_names = [s.name for s in allowed_styles]
-            prompt = f"Given the subject '{subject}', which of the following render styles is most appropriate? Styles: {allowed_style_names}. Respond with only the name of the style from the list, and nothing else."
-            render_style_name = await ollama_client.generate_text(prompt)
-            render_style_name = render_style_name.strip().replace('"', '')
+        # 1. Define the Initial Theme (with translation)
+        initial_theme = ""
+        if args.subject:
+            initial_theme = await _translate_to_english_if_needed(args.subject, ollama_client)
+        else:
+            initial_theme = random.choice(SUBJECT_THEMES)
         
-        chosen_style = next((s for s in allowed_styles if s.name == render_style_name), None)
+        # 2. Choose the Render Style (based on theme)
+        chosen_style = None
+        if args.render_style:
+            chosen_style = next((s for s in allowed_styles if s.name == args.render_style), None)
+        
         if not chosen_style:
-            logger.warning(f"LLM chose style '{render_style_name}' which is not in the allowed list. Picking a random allowed style.")
+            try:
+                allowed_style_names = [s.name for s in allowed_styles]
+                prompt = f"Given the theme '{initial_theme}', which of the following visual styles is most appropriate? Styles: {allowed_style_names}. Respond with only the name of the style from the list, and nothing else."
+                render_style_name = await ollama_client.generate_text(prompt)
+                render_style_name = render_style_name.strip().replace('"', '')
+                chosen_style = next((s for s in allowed_styles if s.name == render_style_name), None)
+            except Exception as e:
+                logger.warning(f"LLM style selection failed: {e}. A random style will be chosen.")
+        
+        if not chosen_style:
+            logger.warning(f"LLM-chosen style not in allowed list or selection failed. Picking a random allowed style.")
             chosen_style = random.choice(allowed_styles)
 
-        # 4. Iterative Refinement
+        # 3. Generate a LIST of Detailed Subjects to force variety
+        subject = initial_theme # Default value
+        try:
+            enriched_theme = f"{initial_theme}, in the style of {chosen_style.name}"
+            prompt = (
+                f"Based on the theme '{enriched_theme}', generate a list of {config.subjects_to_propose} different, specific, and creative subjects for a visual image. "
+                "Focus on concrete scenes, characters, or objects. Avoid abstract concepts. "
+                "Your response MUST be a single valid JSON list of strings, and nothing else. "
+                'Example: ["a majestic griffon...", "a clever kitsune...", "a terrifying chimera..."]'
+            )
+            response_str = await ollama_client.generate_text(prompt)
+            subject_list = _extract_json_list(response_str)
+
+            if subject_list:
+                subject = random.choice(subject_list)
+            else:
+                logger.warning("LLM returned an empty list of subjects. Falling back to the initial theme.")
+        except Exception as e:
+            logger.warning(f"LLM subject list generation failed: {e}. Using the initial theme as subject.")
+
+        # 4. Determine Concrete Elements (with translation)
+        elements = []
+        if args.elements:
+            # Translate all user-provided elements in parallel for efficiency
+            elements = await asyncio.gather(*[_translate_to_english_if_needed(e, ollama_client) for e in args.elements])
+        else:
+            element_prompt = (
+                f"You are an assistant for creating image prompts. Your task is to propose {config.elements_to_propose} categories of visual details "
+                f"relevant to the subject '{subject}'. Focus on concrete, visual attributes. "
+                "Good examples: 'Character's Pose', 'Facial Expression', 'Clothing Style', 'Hairstyle', 'Key Accessory', 'Lighting', 'Background Environment', 'Color Palette', 'Mood'. "
+                "Bad examples: 'Symbolism', 'Narrative', 'Motivation'. "
+                "Your response MUST be a single JSON list of strings, and nothing else."
+            )
+            response_str = await ollama_client.generate_text(element_prompt)
+            elements = random.sample(_extract_json_list(response_str), config.elements_to_select)
+
+        # 5. Iterative Refinement of Elements
         context = [subject]
         for element in elements:
-            prompt = f"Context: {', '.join(context)}. Generate {settings.variations_to_propose} specific variations for the element '{element}'. Provide the output as a single JSON list of strings, and nothing else."
-            response_str = await ollama_client.generate_text(prompt)
+            refinement_prompt = (
+                f"Current prompt context: '{', '.join(context)}'. "
+                f"Propose {config.variations_to_propose} specific, visual, and concrete variations for the element '{element}'. "
+                "Avoid abstract ideas. For 'Lighting', suggest 'dramatic Rembrandt lighting' not 'sad lighting'. For 'Clothing', suggest 'tattered leather armor' not 'adventurous attire'. "
+                "Your response MUST be a single JSON list of strings, and nothing else."
+            )
+            response_str = await ollama_client.generate_text(refinement_prompt)
             choice = random.choice(_extract_json_list(response_str))
             context.append(choice)
 
-        # 5. Assemble and Enhance
-        base_prompt = ", ".join(context)
-        final_positive_prompt = ", ".join(filter(None, [base_prompt, chosen_style.prompt_template]))
+        # 6. Assemble and Enhance
+        base_prompt_list = context
+        final_positive_prompt_template = ", ".join(filter(None, ["{prompt}", chosen_style.prompt_template]))
         final_negative_prompt = chosen_style.negative_prompt_template
 
-        enhanced_positive = await ollama_client.enhance_positive_prompt(final_positive_prompt)
+        enhancement_instruction = (
+            f"You are an expert prompt engineer. Transform the following list of visual concepts into a single, cohesive, and highly descriptive prompt for an image generation AI. "
+            "Combine the ideas into a flowing sentence or two. Focus on what is *seen* in the image. Do not use abstract terms. "
+            f"Concepts to combine: {base_prompt_list}"
+        )
+        
+        enhanced_positive_raw = await ollama_client.generate_text(enhancement_instruction)
+        enhanced_positive = final_positive_prompt_template.format(prompt=enhanced_positive_raw.strip())
+        
         enhanced_negative = await ollama_client.enhance_negative_prompt(final_negative_prompt, enhanced_positive)
 
         return GeneratePromptResult(positive_prompt=enhanced_positive, negative_prompt=enhanced_negative)

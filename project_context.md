@@ -1,5 +1,5 @@
 #### Fichier : project_context.md
-#### Date de dernière mise à jour : 2025-10-04
+#### Date de dernière mise à jour : 2025-10-05
 #### Ce fichier sert de référence unique et doit être fourni en intégralité au début de chaque session.
 
 ---
@@ -156,6 +156,15 @@ Le projet "MCP_GenImage" a évolué de sa conception initiale de simple serveur 
     3.  **Découverte et Résolution d'un Bug de Régression :** Suite à la première correction, un bug a été identifié : le résultat du test pour `generate_prompt` affichait 'undefined'.
     4.  **Analyse et Correction du Bug :** L'analyse a montré que la fonction JavaScript `sendSyncMcpRequest` attendait un format de réponse JSON obsolète et non conforme au protocole MCP. La fonction a été corrigée pour parser correctement la structure de réponse standard (`result.content[0].text`), résolvant ainsi le bug.
 *   **État à la fin :** L'interface de test est désormais entièrement cohérente avec la logique de l'outil `generate_prompt` et le bug d'affichage est corrigé. L'application est stable.
+
+### 28. Amélioration de la Créativité et du Contrôle de l'Outil `generate_prompt` (Session du 2025-10-05)
+*   **Résumé :** Cette session a été consacrée à une refonte majeure de la logique de l'outil `generate_prompt` pour améliorer la qualité, la créativité et la pertinence des prompts générés.
+    1.  **Génération par Thème :** La logique a été modifiée pour utiliser le sujet de l'utilisateur (ou un thème aléatoire) comme une "idée de départ" que le LLM doit développer, plutôt que comme un sujet final.
+    2.  **Contrôle Visuel et Concret :** Des instructions spécifiques ont été ajoutées à chaque étape pour forcer le LLM à se concentrer sur des détails visuels et concrets, évitant ainsi les concepts abstraits.
+    3.  **Diversité Accrue :** Pour contrer la répétition, le LLM est maintenant invité à proposer une liste de sujets variés, parmi laquelle l'application en choisit un au hasard. Le nombre de propositions est configurable.
+    4.  **Cohérence Linguistique :** Une étape de traduction automatique vers l'anglais a été ajoutée au début du processus pour toutes les entrées utilisateur (`sujet` et `elements`), garantissant un traitement cohérent par le LLM.
+    5.  **Palette de Thèmes Étendue :** La liste des thèmes aléatoires a été enrichie avec des sujets de paysages et d'architecture pour augmenter la variété des générations sans input.
+*   **État à la fin :** L'outil `generate_prompt` est nettement plus puissant, créatif et aligné avec l'objectif de produire des prompts visuellement riches et variés. L'application est stable.
 
 ---
 
