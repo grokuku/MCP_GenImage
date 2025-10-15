@@ -1,3 +1,4 @@
+# FICHIER: app/api/mcp_routes.py
 from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError, BaseModel
@@ -110,7 +111,8 @@ async def run_generation_task(
     tool_name: str,
     args: Union[GenerateImageParams, UpscaleImageParams],
     request_id: JsonRpcId,
-    stream_id: str
+    stream_id: str,
+    self_base_url: str
 ):
     db = SessionLocal()
     start_time = time.monotonic()
@@ -119,7 +121,7 @@ async def run_generation_task(
         "negative_prompt": getattr(args, 'negative_prompt', None) or '',
         "status": "FAILED", "render_type_name": args.render_type, "style_names": ", ".join(getattr(args, 'style_names', [])),
         "aspect_ratio": getattr(args, 'aspect_ratio', None), "seed": args.seed,
-        "llm_enhanced": False # Default to False
+        "llm_enhanced": False
     }
 
     try:
@@ -128,12 +130,10 @@ async def run_generation_task(
         
         render_type_name = args.render_type
         
-        # --- Prompt Processing (for generate_image only) ---
         if tool_name == "generate_image":
             enhanced_positive_prompt = args.prompt
             enhanced_negative_prompt = args.negative_prompt
 
-            # 1. LLM Enhancement (if requested and configured)
             if args.enhance_prompt:
                 all_db_settings = crud.get_all_settings(db)
                 instance_id_str = all_db_settings.get("PROMPT_ENHANCEMENT_OLLAMA_INSTANCE_ID")
@@ -156,7 +156,6 @@ async def run_generation_task(
                 else:
                     logger.warning("Prompt enhancement is enabled but not fully configured in General Settings. Skipping.")
 
-            # 2. Style selection and Render Type override
             style_names_to_apply = args.style_names
             if not style_names_to_apply:
                 default_styles = crud.get_default_styles(db)
@@ -171,7 +170,6 @@ async def run_generation_task(
                     elif not render_type_name and style.default_render_type:
                         render_type_name = style.default_render_type.name
 
-            # 3. Assemble final prompts
             positive_parts = [enhanced_positive_prompt]
             negative_parts = [enhanced_negative_prompt]
             if style_names_to_apply:
@@ -183,17 +181,16 @@ async def run_generation_task(
             
             final_prompt = ", ".join(filter(None, positive_parts))
             final_negative_prompt = ", ".join(filter(None, negative_parts))
-        else: # For upscale_image
+        else:
             final_prompt = getattr(args, 'prompt', '')
             final_negative_prompt = getattr(args, 'negative_prompt', '')
 
         log_data.update({"positive_prompt": final_prompt or '', "negative_prompt": final_negative_prompt or ''})
 
-        # --- Determine Render Type ---
         if not render_type_name:
             if tool_name == "generate_image":
                 default_rt = crud.get_default_render_type_for_generation(db)
-            else: # upscale_image
+            else:
                 default_rt = crud.get_default_render_type_for_upscale(db)
             if not default_rt: raise ValueError(f"No default render type configured for '{tool_name}'.")
             render_type_name = default_rt.name
@@ -202,7 +199,6 @@ async def run_generation_task(
         render_type_obj = crud.get_render_type_by_name(db, name=render_type_name)
         if not render_type_obj: raise ValueError(f"Render type '{render_type_name}' not found.")
 
-        # --- Select Instance and Load Workflow ---
         selected_instance = await _select_best_comfyui_instance(db, render_type_name)
         log_data["comfyui_instance_id"] = selected_instance.id
         comfyui_client = ComfyUIClient(api_url=selected_instance.base_url, generation_timeout=settings.comfyui_generation_timeout)
@@ -211,7 +207,6 @@ async def run_generation_task(
         if not workflow_path.is_file(): raise ValueError(f"Workflow file '{render_type_obj.workflow_filename}' not found.")
         workflow = json.loads(workflow_path.read_text())
 
-        # --- Inject Parameters into Workflow ---
         def set_prompt(node_id, text):
             inputs = workflow[node_id]["inputs"]
             if "Text" in inputs: inputs["Text"] = text
@@ -224,7 +219,6 @@ async def run_generation_task(
             if "Value" in workflow[node_id]["inputs"]: workflow[node_id]["inputs"]["Value"] = final_seed
             else: workflow[node_id]["inputs"]["value"] = final_seed
 
-        # --- Mode-Specific Logic ---
         if tool_name == "generate_image":
             if args.aspect_ratio and (node_id := _find_node_id_by_title(workflow, "MCP_RESOLUTION")):
                 width, height = ASPECT_RATIOS.get(args.aspect_ratio, DEFAULT_ASPECT_RATIO)
@@ -236,12 +230,15 @@ async def run_generation_task(
             if (node_id := _find_node_id_by_title(workflow, "MCP_DENOISE")):
                 workflow[node_id]["inputs"]["value"] = denoise
             
-            image_filename = await comfyui_client.upload_image_from_url(args.input_image_url)
+            # Use the dynamically determined self_base_url for the local check
+            image_filename = await comfyui_client.upload_image_from_url(
+                image_url=args.input_image_url,
+                server_public_url_base=self_base_url 
+            )
             if not (node_id := _find_node_id_by_title(workflow, "MCP_INPUT_IMAGE")):
                 raise ValueError("Upscale workflow missing node 'MCP_INPUT_IMAGE'.")
             workflow[node_id]["inputs"]["image"] = image_filename
         
-        # --- Execute and Send Result ---
         output_url_base = crud.get_all_settings(db).get("OUTPUT_URL_BASE")
         if not output_url_base: raise ValueError("OUTPUT_URL_BASE is not configured.")
 
@@ -251,7 +248,17 @@ async def run_generation_task(
         )
         
         log_data.update({"status": "SUCCESS", "image_filename": image_url.split('/')[-1]})
-        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": {"content": [{"type": "image", "source": image_url}]}}})
+
+        structured_output = {
+            "image_url": image_url,
+            "seed": final_seed,
+            "human_readable_summary": f"Image generated successfully: {image_url}"
+        }
+        result_payload = {
+            "structured_output": structured_output,
+            "content": [{"type": "image", "source": image_url}]
+        }
+        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": result_payload}})
 
     except Exception as e:
         error_message = str(e)
@@ -273,7 +280,6 @@ async def run_description_task(
 ):
     db = SessionLocal()
     try:
-        # --- Configuration validation ---
         desc_settings = crud.get_description_settings(db)
         if not desc_settings or not desc_settings.ollama_instance_id or not desc_settings.model_name:
             raise ValueError("The 'describe_image' tool is not configured.")
@@ -287,7 +293,6 @@ async def run_description_task(
         if not prompt_template:
             raise ValueError(f"Invalid description type or language. Could not find template '{template_key}'.")
 
-        # --- Image Processing ---
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(args.input_image_url) as response:
@@ -297,11 +302,18 @@ async def run_description_task(
         except Exception as e:
             raise ValueError(f"Failed to download or process image from URL: {e}")
 
-        # --- Execute and Send Result ---
         async with OllamaClient(api_url=instance.base_url, model_name=desc_settings.model_name) as ollama_client:
             description = await ollama_client.describe_image(prompt=prompt_template, image_base_64=image_base64)
         
-        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": {"content": [{"type": "text", "text": description}]}}})
+        structured_output = {
+            "description": description,
+            "human_readable_summary": description
+        }
+        result_payload = {
+            "structured_output": structured_output,
+            "content": [{"type": "text", "text": description}]
+        }
+        await manager.send_mcp_message(stream_id, {"jsonrpc": "2.0", "method": "stream/chunk", "params": {"stream_id": stream_id, "result": result_payload}})
 
     except Exception as e:
         error_message = str(e)
@@ -314,27 +326,11 @@ async def run_description_task(
         db.close()
 
 
-def _extract_json_list(text: str) -> List[Any]:
-    """Robustly extracts a JSON list from a string that may contain other text."""
-    try:
-        start_index = text.find('[')
-        end_index = text.rfind(']')
-        if start_index != -1 and end_index != -1 and end_index > start_index:
-            json_str = text[start_index:end_index+1]
-            return json.loads(json_str)
-        else:
-            raise ValueError("No JSON list found in the text.")
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Failed to decode or extract JSON from LLM response: {text}")
-        raise ValueError(f"LLM returned malformed data that could not be parsed as a list.") from e
-
-
 class GeneratePromptResult(BaseModel):
     positive_prompt: str
     negative_prompt: str
 
 async def _translate_to_english_if_needed(text: str, client: OllamaClient) -> str:
-    """Translates text to English if it's not already, using the LLM."""
     if not text or not text.strip():
         return text
     try:
@@ -346,7 +342,6 @@ async def _translate_to_english_if_needed(text: str, client: OllamaClient) -> st
             f"Text: \"{text}\""
         )
         translated_text = await client.generate_text(prompt)
-        # Clean up potential LLM artifacts like quotes
         return translated_text.strip().replace('"', '')
     except Exception as e:
         logger.warning(f"Could not translate text '{text}': {e}. Using original text.")
@@ -355,32 +350,17 @@ async def _translate_to_english_if_needed(text: str, client: OllamaClient) -> st
 async def run_prompt_generator_task(
     args: GeneratePromptParams, db: Session
 ) -> GeneratePromptResult:
-    """Executes the complete workflow for the 'generate_prompt' tool."""
-    # --- MODIFICATION START: Expanded subject themes ---
     SUBJECT_THEMES = [
-        # Character Themes
-        "a dramatic close-up portrait of a character",
-        "a full body shot of a character in a dynamic action pose",
-        "an intimate scene focusing on a character's emotions",
-        "a character interacting with a fantastical creature",
-        "a character set against a vast, breathtaking landscape",
-        "a mysterious figure in a dark, moody environment",
-        "a sci-fi character with advanced technology",
-        "a fantasy hero preparing for battle",
-        # Landscape Themes
-        "an epic, panoramic view of a mountain range at sunrise",
-        "an enchanted forest with glowing flora and a mystical river",
-        "a desolate, alien desert under a sky with two moons",
-        "a storm-swept coastline with crashing waves against dramatic cliffs",
-        # Architecture Themes
-        "a sprawling, futuristic cityscape with flying vehicles and towering megastructures",
-        "the intricate, gothic interior of a grand cathedral with stained glass windows",
-        "the overgrown ruins of an ancient, forgotten temple in the jungle",
-        "a cozy, detailed cutaway of a hobbit-style burrow built into a hillside",
+        "a dramatic close-up portrait of a character", "a full body shot of a character in a dynamic action pose",
+        "an intimate scene focusing on a character's emotions", "a character interacting with a fantastical creature",
+        "a character set against a vast, breathtaking landscape", "a mysterious figure in a dark, moody environment",
+        "a sci-fi character with advanced technology", "a fantasy hero preparing for battle",
+        "an epic, panoramic view of a mountain range at sunrise", "an enchanted forest with glowing flora and a mystical river",
+        "a desolate, alien desert under a sky with two moons", "a storm-swept coastline with crashing waves against dramatic cliffs",
+        "a sprawling, futuristic cityscape with flying vehicles and towering megastructures", "the intricate, gothic interior of a grand cathedral with stained glass windows",
+        "the overgrown ruins of an ancient, forgotten temple in the jungle", "a cozy, detailed cutaway of a hobbit-style burrow built into a hillside",
     ]
-    # --- MODIFICATION END ---
     
-    # 0. Get Configuration
     config = crud.get_prompt_generator_settings(db)
     allowed_styles = crud.get_allowed_styles_for_generator(db)
     if not allowed_styles:
@@ -398,15 +378,12 @@ async def run_prompt_generator_task(
         raise ValueError("The configured Prompt Enhancement LLM is inactive or not found.")
 
     async with OllamaClient(api_url=instance.base_url, model_name=model_name) as ollama_client:
-        
-        # 1. Define the Initial Theme (with translation)
         initial_theme = ""
         if args.subject:
             initial_theme = await _translate_to_english_if_needed(args.subject, ollama_client)
         else:
             initial_theme = random.choice(SUBJECT_THEMES)
         
-        # 2. Choose the Render Style (based on theme)
         chosen_style = None
         if args.render_style:
             chosen_style = next((s for s in allowed_styles if s.name == args.render_style), None)
@@ -425,30 +402,49 @@ async def run_prompt_generator_task(
             logger.warning(f"LLM-chosen style not in allowed list or selection failed. Picking a random allowed style.")
             chosen_style = random.choice(allowed_styles)
 
-        # 3. Generate a LIST of Detailed Subjects to force variety
-        subject = initial_theme # Default value
+        subject = initial_theme
         try:
-            enriched_theme = f"{initial_theme}, in the style of {chosen_style.name}"
-            prompt = (
-                f"Based on the theme '{enriched_theme}', generate a list of {config.subjects_to_propose} different, specific, and creative subjects for a visual image. "
-                "Focus on concrete scenes, characters, or objects. Avoid abstract concepts. "
-                "Your response MUST be a single valid JSON list of strings, and nothing else. "
-                'Example: ["a majestic griffon...", "a clever kitsune...", "a terrifying chimera..."]'
-            )
-            response_str = await ollama_client.generate_text(prompt)
-            subject_list = _extract_json_list(response_str)
+            prompt = ""
+            if args.subject:
+                # If user provides a subject, ask for variations of IT.
+                prompt = (
+                    f"Based on the core subject '{initial_theme}', generate a list of {config.subjects_to_propose} creative and specific variations for an image. "
+                    "Each variation MUST be a direct elaboration of the original subject, adding context, action, or details. Do not replace the core subject. "
+                    "Feel free to place the subject in diverse settings (realistic, fantasy, sci-fi, etc.) unless the subject itself implies a specific universe. "
+                    "Your response MUST be a single valid JSON list of strings."
+                )
+            else:
+                # If no subject is provided, ask for brand new ideas based on the random theme.
+                enriched_theme = f"{initial_theme}, in the style of {chosen_style.name}"
+                prompt = (
+                    f"Based on the theme '{enriched_theme}', generate a list of {config.subjects_to_propose} different, specific, and creative subjects for a visual image. "
+                    "Focus on concrete scenes, characters, or objects. Avoid abstract concepts. "
+                    "Your response MUST be a single valid JSON list of strings, and nothing else. "
+                    'Example: ["a majestic griffon...", "a clever kitsune...", "a terrifying chimera..."]'
+                )
+
+            raw_response = await ollama_client.generate_json(prompt)
+            logger.info(f"LLM raw response for subjects: {raw_response}")
+
+            subject_list = []
+            if isinstance(raw_response, list):
+                subject_list = raw_response
+            elif isinstance(raw_response, dict):
+                # Find the first value in the dict that is a list
+                for value in raw_response.values():
+                    if isinstance(value, list):
+                        subject_list = value
+                        break
 
             if subject_list:
                 subject = random.choice(subject_list)
             else:
-                logger.warning("LLM returned an empty list of subjects. Falling back to the initial theme.")
+                logger.warning("Could not extract a valid list of subjects from LLM response. Falling back to the initial theme.")
         except Exception as e:
             logger.warning(f"LLM subject list generation failed: {e}. Using the initial theme as subject.")
 
-        # 4. Determine Concrete Elements (with translation)
         elements = []
         if args.elements:
-            # Translate all user-provided elements in parallel for efficiency
             elements = await asyncio.gather(*[_translate_to_english_if_needed(e, ollama_client) for e in args.elements])
         else:
             element_prompt = (
@@ -458,23 +454,50 @@ async def run_prompt_generator_task(
                 "Bad examples: 'Symbolism', 'Narrative', 'Motivation'. "
                 "Your response MUST be a single JSON list of strings, and nothing else."
             )
-            response_str = await ollama_client.generate_text(element_prompt)
-            elements = random.sample(_extract_json_list(response_str), config.elements_to_select)
+            raw_elements = await ollama_client.generate_json(element_prompt)
+            logger.info(f"LLM raw response for proposed elements: {raw_elements}")
+            
+            proposed_elements = []
+            if isinstance(raw_elements, list):
+                proposed_elements = raw_elements
+            elif isinstance(raw_elements, dict):
+                for value in raw_elements.values():
+                    if isinstance(value, list):
+                        proposed_elements = value
+                        break
+            
+            if proposed_elements:
+                elements = random.sample(proposed_elements, min(config.elements_to_select, len(proposed_elements)))
 
-        # 5. Iterative Refinement of Elements
         context = [subject]
         for element in elements:
-            refinement_prompt = (
-                f"Current prompt context: '{', '.join(context)}'. "
-                f"Propose {config.variations_to_propose} specific, visual, and concrete variations for the element '{element}'. "
-                "Avoid abstract ideas. For 'Lighting', suggest 'dramatic Rembrandt lighting' not 'sad lighting'. For 'Clothing', suggest 'tattered leather armor' not 'adventurous attire'. "
-                "Your response MUST be a single JSON list of strings, and nothing else."
-            )
-            response_str = await ollama_client.generate_text(refinement_prompt)
-            choice = random.choice(_extract_json_list(response_str))
-            context.append(choice)
+            try:
+                refinement_prompt = (
+                    f"Current prompt context: '{', '.join(context)}'. "
+                    f"Propose {config.variations_to_propose} specific, visual, and concrete variations for the element '{element}'. "
+                    "Avoid abstract ideas. For 'Lighting', suggest 'dramatic Rembrandt lighting' not 'sad lighting'. For 'Clothing', suggest 'tattered leather armor' not 'adventurous attire'. "
+                    "Your response MUST be a single JSON list of strings, and nothing else."
+                )
+                raw_choices = await ollama_client.generate_json(refinement_prompt)
+                logger.info(f"LLM raw response for element '{element}': {raw_choices}")
 
-        # 6. Assemble and Enhance
+                choices = []
+                if isinstance(raw_choices, list):
+                    choices = raw_choices
+                elif isinstance(raw_choices, dict):
+                    for value in raw_choices.values():
+                        if isinstance(value, list):
+                            choices = value
+                            break
+
+                if choices:
+                    choice = random.choice(choices)
+                    context.append(choice)
+                else:
+                    logger.warning(f"LLM returned no valid choices for element '{element}'. Skipping.")
+            except Exception as e:
+                logger.warning(f"LLM failed to provide choices for element '{element}': {e}. Skipping it.")
+
         base_prompt_list = context
         final_positive_prompt_template = ", ".join(filter(None, ["{prompt}", chosen_style.prompt_template]))
         final_negative_prompt = chosen_style.negative_prompt_template
@@ -519,6 +542,15 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             tool_def = copy.deepcopy(GENERATE_IMAGE_TOOL_SCHEMA)
             if style_names: tool_def["inputSchema"]["properties"]["style_names"]["enum"] = style_names
             tool_def["inputSchema"]["properties"]["render_type"]["enum"] = [rt.name for rt in gen_render_types]
+            tool_def["outputSchema"] = {
+                "type": "object",
+                "properties": {
+                    "image_url": {"type": "string", "description": "The URL of the generated image."},
+                    "seed": {"type": "integer", "description": "The seed used for the generation."},
+                    "human_readable_summary": {"type": "string", "description": "A summary of the result."}
+                },
+                "required": ["image_url", "seed", "human_readable_summary"]
+            }
             tools.append(tool_def)
         
         upscale_render_types = [rt for rt in visible_render_types if rt.generation_mode == 'upscale']
@@ -527,22 +559,47 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             upscale_type_names = [rt.name for rt in upscale_render_types]
             tool_def["inputSchema"]["properties"]["render_type"]["enum"] = upscale_type_names
             tool_def["inputSchema"]["properties"]["upscale_type"]["enum"] = upscale_type_names
+            tool_def["outputSchema"] = {
+                "type": "object",
+                "properties": {
+                    "image_url": {"type": "string", "description": "The URL of the upscaled image."},
+                    "seed": {"type": "integer", "description": "The seed used for the generation."},
+                    "human_readable_summary": {"type": "string", "description": "A summary of the result."}
+                },
+                "required": ["image_url", "seed", "human_readable_summary"]
+            }
             tools.append(tool_def)
 
         desc_settings = crud.get_description_settings(db)
         if desc_settings and desc_settings.ollama_instance_id and desc_settings.model_name:
-            tools.append(DESCRIBE_IMAGE_TOOL_SCHEMA)
+            tool_def = copy.deepcopy(DESCRIBE_IMAGE_TOOL_SCHEMA)
+            tool_def["outputSchema"] = {
+                "type": "object",
+                "properties": {
+                    "description": {"type": "string", "description": "The generated textual description of the image."},
+                    "human_readable_summary": {"type": "string", "description": "A summary of the result."}
+                },
+                "required": ["description", "human_readable_summary"]
+            }
+            tools.append(tool_def)
 
         allowed_styles = crud.get_allowed_styles_for_generator(db)
         if allowed_styles:
             tool_def = copy.deepcopy(PROMPT_GENERATOR_TOOL_SCHEMA)
             tool_def["inputSchema"]["properties"]["render_style"]["enum"] = [s.name for s in allowed_styles]
+            tool_def["outputSchema"] = {
+                "type": "object",
+                "properties": {
+                    "positive_prompt": {"type": "string", "description": "The generated positive prompt."},
+                    "negative_prompt": {"type": "string", "description": "The generated negative prompt."},
+                    "human_readable_summary": {"type": "string", "description": "A formatted summary of the generated prompts."}
+                },
+                "required": ["positive_prompt", "negative_prompt", "human_readable_summary"]
+            }
             tools.append(tool_def)
 
-        # --- START OF FIX: Ensure proper JSON serialization ---
         response_model = JsonRpcResponse(result={"tools": tools}, id=request_id)
         return JSONResponse(content=response_model.model_dump(exclude_none=True))
-        # --- END OF FIX ---
 
     if rpc_request.method == "tools/call":
         try:
@@ -552,16 +609,25 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
             
             if tool_name == "generate_prompt":
                 validated_args = GeneratePromptParams.model_validate(arguments)
-                result = await run_prompt_generator_task(validated_args, db)
-                formatted_text = (
-                    f"**Positive Prompt:**\n```\n{result.positive_prompt}\n```\n"
-                    f"**Negative Prompt:**\n```\n{result.negative_prompt}\n```"
+                result_obj = await run_prompt_generator_task(validated_args, db)
+                
+                human_readable_summary = (
+                    f"**Positive Prompt:**\n```\n{result_obj.positive_prompt}\n```\n"
+                    f"**Negative Prompt:**\n```\n{result_obj.negative_prompt}\n```"
                 )
-                result_content = {"content": [{"type": "text", "text": formatted_text}]}
-                # --- START OF FIX: Ensure proper JSON serialization ---
+                
+                structured_json_payload = {
+                    "positive_prompt": result_obj.positive_prompt,
+                    "negative_prompt": result_obj.negative_prompt,
+                    "human_readable_summary": human_readable_summary
+                }
+                
+                result_content = {
+                    "content": [{"type": "json", "json": structured_json_payload}]
+                }
+                
                 response_model = JsonRpcResponse(result=result_content, id=request_id)
                 return JSONResponse(content=response_model.model_dump(exclude_none=True))
-                # --- END OF FIX ---
 
             task_function = None
             validated_args = None
@@ -589,9 +655,13 @@ async def mcp_endpoint(request: Request, background_tasks: BackgroundTasks, db: 
                 scheme = "ws" if request.url.scheme == "http" else "wss"
                 ws_url = f"{scheme}://{request.url.hostname}:{request.url.port}/ws/stream/{stream_id}"
             
+            # Dynamically determine the server's own base URL from the request
+            self_base_url = f"{request.url.scheme}://{request.url.netloc}"
+
             task_kwargs = {"args": validated_args, "request_id": request_id, "stream_id": stream_id}
             if tool_name in ["generate_image", "upscale_image"]:
                 task_kwargs["tool_name"] = tool_name
+                task_kwargs["self_base_url"] = self_base_url # Pass it to the background task
 
             background_tasks.add_task(task_function, **task_kwargs)
 

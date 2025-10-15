@@ -1,4 +1,4 @@
-# app/services/comfyui_client.py
+# FICHIER: app/services/comfyui_client.py
 import json
 import httpx
 import websockets
@@ -110,30 +110,64 @@ class ComfyUIClient:
             logger.warning(f"Could not get queue size for {self.base_api_url}: {e}")
             raise ComfyUIConnectionError(f"Could not get queue size from {self.base_api_url}") from e
 
-    async def upload_image_from_url(self, image_url: str) -> str:
-        """Downloads an image from a URL and uploads it to the ComfyUI server."""
+    async def upload_image_from_url(self, image_url: str, server_public_url_base: str | None = None) -> str:
+        """
+        Downloads an image from a URL (or reads from local path if URL is local)
+        and uploads it to the ComfyUI server.
+        """
+        image_data: bytes
+        filename: str
+        content_type: str
+    
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as response:
-                    response.raise_for_status()
-                    image_data = await response.read()
-                    content_type = response.headers.get('Content-Type', 'application/octet-stream')
-
-                filename = Path(urlparse(image_url).path).name or "uploaded_image.bin"
-                form_data = aiohttp.FormData()
-                form_data.add_field('image', image_data, filename=filename, content_type=content_type)
+            # Step 1: Get the image data, either from a local file or a remote URL
+            if server_public_url_base and image_url.startswith(server_public_url_base.rstrip('/') + '/'):
+                logger.info(f"Image URL '{image_url}' detected as local. Reading from filesystem.")
+                # Convert URL to local file path (e.g., http://host/outputs/file.png -> /app/outputs/file.png)
+                url_path = urlparse(image_url).path.lstrip('/')
+                local_path = Path("/app") / url_path
+    
+                if not local_path.is_file():
+                    raise ComfyUIError(f"Local file not found at path: {local_path}")
                 
+                def _read_file():
+                    with open(local_path, "rb") as f:
+                        return f.read()
+                image_data = await asyncio.to_thread(_read_file)
+                filename = local_path.name
+                content_type = f"image/{local_path.suffix.lstrip('.')}" if local_path.suffix else 'application/octet-stream'
+    
+            else:
+                logger.info(f"Image URL '{image_url}' is external. Downloading...")
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_url) as response:
+                        response.raise_for_status()
+                        image_data = await response.read()
+                        content_type = response.headers.get('Content-Type', 'application/octet-stream')
+                filename = Path(urlparse(image_url).path).name or "uploaded_image.bin"
+    
+            # Step 2: Upload the acquired image data to ComfyUI
+            form_data = aiohttp.FormData()
+            form_data.add_field('image', image_data, filename=filename, content_type=content_type)
+            
+            async with aiohttp.ClientSession() as session:
                 async with session.post(f"{self.base_api_url}/upload/image", data=form_data) as upload_response:
                     upload_response.raise_for_status()
                     response_json = await upload_response.json()
-                    if 'name' not in response_json:
-                        raise ComfyUIError(f"ComfyUI image upload response did not contain a 'name' field. Response: {response_json}")
-                    return response_json['name']
-
-        except aiohttp.ClientError as e:
-            raise ComfyUIConnectionError(f"Failed to download or upload image from URL {image_url}: {e}") from e
+            
+            if 'name' not in response_json:
+                raise ComfyUIError(f"ComfyUI image upload response did not contain a 'name' field. Response: {response_json}")
+            
+            logger.info(f"Successfully uploaded image '{filename}' to ComfyUI as '{response_json['name']}'")
+            return response_json['name']
+    
+        except (aiohttp.ClientError, FileNotFoundError) as e:
+            raise ComfyUIConnectionError(f"Failed to download, read, or upload image from URL {image_url}: {e}") from e
         except Exception as e:
-            raise ComfyUIError(f"An unexpected error occurred during image upload: {e}") from e
+            logger.error(f"Unexpected error during image upload from URL {image_url}", exc_info=True)
+            if not isinstance(e, ComfyUIError):
+                    raise ComfyUIError(f"An unexpected error occurred during image upload: {e}") from e
+            raise e
 
     async def run_workflow_and_get_image(
         self,
